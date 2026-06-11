@@ -11,7 +11,7 @@ import {
 
 const USERS_KEY = 'apitizer.users.v1';
 const VERIFIER_TEXT = 'apitizer-verify-v1';
-const MIN_PASSWORD_LENGTH = 12;
+const MIN_PASSWORD_LENGTH = 8;
 
 function loadUsers() {
   try { return JSON.parse(localStorage.getItem(USERS_KEY)) || {}; }
@@ -29,7 +29,7 @@ function passwordProblem(password) {
   const value = String(password || '');
   if (value.length < MIN_PASSWORD_LENGTH) return `비밀번호는 ${MIN_PASSWORD_LENGTH}자 이상이어야 합니다.`;
   const classes = [/[a-z]/, /[A-Z]/, /[0-9]/, /[^a-zA-Z0-9]/].filter((re) => re.test(value)).length;
-  if (value.length < 16 && classes < 3) return '비밀번호는 16자 미만이면 영문 대/소문자, 숫자, 특수문자 중 3종류 이상을 섞어주세요.';
+  if (value.length < 12 && classes < 3) return '비밀번호는 12자 미만이면 영문 대/소문자, 숫자, 특수문자 중 3종류 이상을 섞어주세요.';
   if (/^(.)\1+$/.test(value)) return '반복 문자만으로 된 비밀번호는 사용할 수 없습니다.';
   if (/password|1234|qwer|admin|apitizer/i.test(value)) return '추측하기 쉬운 단어가 포함된 비밀번호는 사용할 수 없습니다.';
   return '';

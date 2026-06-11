@@ -1966,7 +1966,7 @@ function getBackupExportPassword() {
   const pass = $('#backupPass').value;
   const pass2 = $('#backupPass2').value;
   if (!pass) throw new Error('백업 암호를 입력해주세요.');
-  if (pass.length < 12) throw new Error('백업 암호는 12자 이상이어야 합니다.');
+  if (pass.length < 8) throw new Error('백업 암호는 8자 이상이어야 합니다.');
   if (pass !== pass2) throw new Error('백업 암호 확인이 일치하지 않습니다.');
   return pass;
 }

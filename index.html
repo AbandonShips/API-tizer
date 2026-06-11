@@ -31,7 +31,7 @@
           <span id="authSwitchText">계정이 없으신가요?</span>
           <a id="authToggle" href="#">회원가입</a>
         </p>
-        <p class="auth-warn">비밀번호는 12자 이상 권장입니다. 잊으면 암호화된 데이터를 복구할 수 없습니다.</p>
+        <p class="auth-warn">비밀번호는 8자 이상이며, 길수록 안전합니다. 잊으면 암호화된 데이터를 복구할 수 없습니다.</p>
       </div>
     </div>
 
@@ -169,7 +169,7 @@
               <input id="backupFile" type="file" accept="application/json,.json" hidden />
             </div>
             <div class="backup-pass-grid">
-              <input id="backupPass" class="auth-input" type="password" autocomplete="new-password" placeholder="내보내기 백업 암호 (12자 이상)" />
+              <input id="backupPass" class="auth-input" type="password" autocomplete="new-password" placeholder="내보내기 백업 암호 (8자 이상)" />
               <input id="backupPass2" class="auth-input" type="password" autocomplete="new-password" placeholder="백업 암호 확인" />
               <input id="backupImportPass" class="auth-input" type="password" autocomplete="current-password" placeholder="가져오기 백업 암호" />
             </div>
@@ -207,7 +207,7 @@
         <div class="modal-body">
           <div class="auth-fields">
             <input id="pwCurrent" class="auth-input" type="password" autocomplete="current-password" placeholder="현재 비밀번호" />
-            <input id="pwNew" class="auth-input" type="password" autocomplete="new-password" placeholder="새 비밀번호 (12자 이상)" />
+            <input id="pwNew" class="auth-input" type="password" autocomplete="new-password" placeholder="새 비밀번호 (8자 이상)" />
             <input id="pwNew2" class="auth-input" type="password" autocomplete="new-password" placeholder="새 비밀번호 확인" />
           </div>
           <p id="pwError" class="auth-error" hidden></p>
