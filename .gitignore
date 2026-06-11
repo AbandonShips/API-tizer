@@ -1,0 +1,27 @@
+# Local secrets and backups
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+private/
+
+# API-Tizer encrypted backups still contain API keys if the password is guessed
+apitizer-backup-*.json
+backup-*.json
+backups/
+exports/
+
+# Python/runtime clutter
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.tmp-edge*/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+!.vscode/extensions.json

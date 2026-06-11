@@ -1,0 +1,159 @@
+// Minimal, dependency-free, XSS-safe markdown -> HTML renderer.
+// All raw text is HTML-escaped FIRST, then a limited set of markdown
+// constructs are applied. No raw HTML from the model is ever injected.
+
+function escapeHtml(s) {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function unescapeHtml(s) {
+  return s
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+// Lightweight, dependency-free syntax highlighter. Operates on RAW code and
+// re-escapes every piece through escapeHtml, so the output is always XSS-safe.
+const HL_PATTERNS = [
+  ['comment', /\/\/[^\n]*|#[^\n]*|\/\*[\s\S]*?\*\//],
+  ['string', /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`/],
+  ['number', /\b\d+(?:\.\d+)?\b/],
+  ['keyword', /\b(?:function|return|if|else|elif|for|while|const|let|var|new|class|import|export|from|default|async|await|def|print|lambda|with|try|except|catch|finally|throw|raise|switch|case|break|continue|in|of|do|yield|typeof|instanceof|extends|super|interface|type|enum|struct|func|fn|package|use|pub|mut|impl|public|private|protected|static|void|this|self|null|nil|undefined|true|false|True|False|None)\b/],
+];
+const HL_COMBINED = new RegExp(HL_PATTERNS.map(([, re]) => '(' + re.source + ')').join('|'), 'g');
+
+function highlightCode(rawCode) {
+  let out = '';
+  let last = 0;
+  let m;
+  HL_COMBINED.lastIndex = 0;
+  while ((m = HL_COMBINED.exec(rawCode)) !== null) {
+    if (m.index > last) out += escapeHtml(rawCode.slice(last, m.index));
+    let cls = 'plain';
+    for (let g = 0; g < HL_PATTERNS.length; g++) {
+      if (m[g + 1] !== undefined) { cls = HL_PATTERNS[g][0]; break; }
+    }
+    out += `<span class="tok-${cls}">${escapeHtml(m[0])}</span>`;
+    last = m.index + m[0].length;
+    if (m[0].length === 0) HL_COMBINED.lastIndex++; // guard against zero-width matches
+  }
+  if (last < rawCode.length) out += escapeHtml(rawCode.slice(last));
+  return out;
+}
+
+function inline(text) {
+  let t = text;
+  // inline code
+  t = t.replace(/`([^`]+)`/g, (_, c) => `<code>${c}</code>`);
+  // bold
+  t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  t = t.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+  // italic
+  t = t.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  // links [text](url) — only http/https/mailto allowed
+  t = t.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/g,
+    (_, label, url) => `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`);
+  return t;
+}
+
+export function renderMarkdown(src) {
+  if (!src) return '';
+  const escaped = escapeHtml(src);
+  const lines = escaped.split('\n');
+  let html = '';
+  let i = 0;
+  let listType = null; // 'ul' | 'ol'
+
+  const closeList = () => {
+    if (listType) { html += `</${listType}>`; listType = null; }
+  };
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // fenced code block
+    const fence = line.match(/^```(\w*)\s*$/);
+    if (fence) {
+      closeList();
+      const lang = (fence[1] || '').toLowerCase();
+      i++;
+      let code = '';
+      while (i < lines.length && !/^```\s*$/.test(lines[i])) {
+        code += lines[i] + '\n';
+        i++;
+      }
+      i++; // skip closing fence
+      // `code` is HTML-escaped here (whole source was escaped up front); recover
+      // the raw text so the highlighter and copy button get the real characters.
+      const rawCode = unescapeHtml(code.replace(/\n$/, ''));
+      const highlighted = highlightCode(rawCode);
+      const langLabel = escapeHtml(lang || 'code');
+      const copyData = encodeURIComponent(rawCode);
+      html += `<div class="code-block"><div class="code-bar">` +
+        `<span class="code-lang">${langLabel}</span>` +
+        `<button type="button" class="code-copy" data-code="${copyData}" title="코드 복사">복사</button>` +
+        `</div><pre><code>${highlighted}</code></pre></div>`;
+      continue;
+    }
+
+    // headings
+    const h = line.match(/^(#{1,3})\s+(.*)$/);
+    if (h) {
+      closeList();
+      const level = h[1].length;
+      html += `<h${level}>${inline(h[2])}</h${level}>`;
+      i++; continue;
+    }
+
+    // horizontal rule
+    if (/^(---|\*\*\*|___)\s*$/.test(line)) {
+      closeList(); html += '<hr/>'; i++; continue;
+    }
+
+    // blockquote
+    if (/^&gt;\s?/.test(line)) {
+      closeList();
+      html += `<blockquote>${inline(line.replace(/^&gt;\s?/, ''))}</blockquote>`;
+      i++; continue;
+    }
+
+    // unordered list
+    if (/^\s*[-*+]\s+/.test(line)) {
+      if (listType !== 'ul') { closeList(); html += '<ul>'; listType = 'ul'; }
+      html += `<li>${inline(line.replace(/^\s*[-*+]\s+/, ''))}</li>`;
+      i++; continue;
+    }
+    // ordered list
+    if (/^\s*\d+\.\s+/.test(line)) {
+      if (listType !== 'ol') { closeList(); html += '<ol>'; listType = 'ol'; }
+      html += `<li>${inline(line.replace(/^\s*\d+\.\s+/, ''))}</li>`;
+      i++; continue;
+    }
+
+    // blank line
+    if (/^\s*$/.test(line)) { closeList(); i++; continue; }
+
+    // paragraph (gather consecutive plain lines)
+    closeList();
+    let para = line;
+    i++;
+    while (i < lines.length && !/^\s*$/.test(lines[i]) &&
+           !/^```/.test(lines[i]) && !/^#{1,3}\s/.test(lines[i]) &&
+           !/^\s*[-*+]\s+/.test(lines[i]) && !/^\s*\d+\.\s+/.test(lines[i]) &&
+           !/^&gt;\s?/.test(lines[i])) {
+      para += '\n' + lines[i];
+      i++;
+    }
+    html += `<p>${inline(para).replace(/\n/g, '<br/>')}</p>`;
+  }
+  closeList();
+  return html;
+}
