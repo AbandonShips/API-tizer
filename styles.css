@@ -681,3 +681,18 @@ body.force-desktop #app { min-width: 900px; }
 .sync-status[data-state="error"],
 .sync-status[data-state="offline"] { color: var(--danger); }
 
+.inline-notice-layer {
+  position: fixed; inset: 0; z-index: 220; background: transparent;
+}
+.inline-notice {
+  position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 12px; max-width: min(420px, calc(100vw - 28px));
+  background: var(--panel); color: var(--text); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: var(--shadow); padding: 10px 12px; font-size: 13px;
+}
+.inline-notice button {
+  flex: 0 0 auto; border: 1px solid var(--border); background: var(--bg-3); color: var(--text);
+  border-radius: 7px; padding: 5px 9px; font-family: inherit; font-size: 12px; cursor: pointer;
+}
+.inline-notice button:hover { border-color: var(--accent); }
+

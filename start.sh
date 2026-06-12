@@ -10,8 +10,11 @@ echo " 배포/모바일 실사용은 https://abandonships.github.io/API-tizer/ �
 echo " 종료하려면 이 터미널에서 Ctrl+C"
 echo
 
-if command -v python3 >/dev/null 2>&1; then
+if command -v python3 >/dev/null 2>&1 && python3 -V >/dev/null 2>&1; then
   python3 server.py
-else
+elif command -v python >/dev/null 2>&1 && python -V >/dev/null 2>&1; then
   python server.py
+else
+  echo "Python 실행 파일을 찾지 못했습니다. python3 또는 python을 설치해 주세요."
+  exit 1
 fi

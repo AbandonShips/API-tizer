@@ -106,7 +106,7 @@ initAuth();
 function initAppEvents() {
   $('#newChatBtn').addEventListener('click', () => { newChat(); closeDrawer(); });
   $('#brandHomeBtn').addEventListener('click', () => { newChat(); closeDrawer(); });
-  $('#settingsBtn').addEventListener('click', openSettings);
+  $('#settingsBtn').addEventListener('click', () => { openSettings(); closeDrawer(); });
   $('#exportBtn').addEventListener('click', exportChat);
   $('#logoutBtn').addEventListener('click', logout);
   $('#resetUsageBtn').addEventListener('click', doResetUsage);
@@ -153,6 +153,12 @@ function initAppEvents() {
 
   masterToggle.addEventListener('change', () => {
     settings.masterEnabled = masterToggle.checked;
+    if (settings.masterEnabled) {
+      const master = settings.models.find((m) => m.id === settings.masterId);
+      if (master) master.enabled = true;
+      renderChips();
+      renderUsage();
+    }
     persistSettings();
   });
 
@@ -1257,6 +1263,9 @@ async function runContentSearch() {
       const ts = await listTurns(c.id, session.key);
       if (ts.some((t) => {
         if ((t.user || '').toLowerCase().includes(term)) return true;
+        if ((t.attachments || []).some((a) =>
+          (a.name || '').toLowerCase().includes(term) ||
+          (a.kind === 'text' && (a.text || '').toLowerCase().includes(term)))) return true;
         const rs = t.responses || {};
         return Object.values(rs).some((r) => (r.text || '').toLowerCase().includes(term))
           || (t.master && (t.master.text || '').toLowerCase().includes(term));
@@ -1316,7 +1325,7 @@ function renderChips() {
     const chip = h('span', {
       class: 'chip ' + (m.enabled ? 'on' : 'off'),
       title: '클릭하여 이 모델 켜기/끄기',
-      onclick: () => { m.enabled = !m.enabled; persistSettings(); renderChips(); renderUsage(); },
+      onclick: () => toggleModelChip(m),
     }, [
       h('span', { class: 'badge', style: `background:${MODEL_META[m.type].color}` }),
       m.label + (settings.masterId === m.id ? ' 👑' : ''),
@@ -1325,6 +1334,31 @@ function renderChips() {
   }
 }
 
+
+function toggleModelChip(model) {
+  const disablingMaster = model.enabled && settings.masterEnabled && settings.masterId === model.id;
+  model.enabled = !model.enabled;
+  if (disablingMaster) {
+    settings.masterEnabled = false;
+    masterToggle.checked = false;
+    showInlineNotice('마스터 모델을 제외하면 마스터 기능이 꺼집니다.');
+  }
+  persistSettings();
+  renderChips();
+  renderUsage();
+}
+
+function showInlineNotice(message) {
+  document.querySelector('.inline-notice-layer')?.remove();
+  const layer = h('div', { class: 'inline-notice-layer', onclick: () => layer.remove() });
+  const notice = h('div', { class: 'inline-notice', role: 'alert' }, [
+    h('span', { text: message }),
+    h('button', { type: 'button', text: '확인', onclick: (e) => { e.stopPropagation(); layer.remove(); } }),
+  ]);
+  notice.addEventListener('click', (e) => e.stopPropagation());
+  layer.appendChild(notice);
+  document.body.appendChild(layer);
+}
 // =====================================================================
 //  Monthly usage estimate (sidebar)
 // =====================================================================
