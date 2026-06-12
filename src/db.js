@@ -9,14 +9,20 @@
 import { encryptJSON, decryptJSON } from './crypto.js';
 
 const DB_NAME = 'apitizer';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 let dbPromise = null;
+
+// When true (online/sync mode), deletes become tombstones and every write is
+// flagged `dirty` so the sync layer can ship just the changes. In local-only
+// mode this stays false and the store behaves exactly as before.
+let syncEnabled = false;
+export function setSyncEnabled(on) { syncEnabled = !!on; }
 
 function openDB() {
   if (dbPromise) return dbPromise;
   dbPromise = new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
+    req.onupgradeneeded = (event) => {
       const db = req.result;
       const txn = req.transaction;
       let chats;
@@ -28,6 +34,9 @@ function openDB() {
       if (!chats.indexNames.contains('user')) {
         chats.createIndex('user', 'user', { unique: false });
       }
+      if (!chats.indexNames.contains('dirty')) {
+        chats.createIndex('dirty', 'dirty', { unique: false });
+      }
 
       let turns;
       if (!db.objectStoreNames.contains('turns')) {
@@ -37,6 +46,49 @@ function openDB() {
       }
       if (!turns.indexNames.contains('chatId')) {
         turns.createIndex('chatId', 'chatId', { unique: false });
+      }
+      if (!turns.indexNames.contains('user')) {
+        turns.createIndex('user', 'user', { unique: false });
+      }
+      if (!turns.indexNames.contains('dirty')) {
+        turns.createIndex('dirty', 'dirty', { unique: false });
+      }
+
+      // Key/value store for sync bookkeeping (last_sync_timestamp per user) and
+      // the synced copy of each user's encrypted settings blob.
+      if (!db.objectStoreNames.contains('meta')) {
+        db.createObjectStore('meta', { keyPath: 'key' });
+      }
+
+      // v2 -> v3: backfill sync metadata onto existing rows so they can later
+      // be uploaded. `user` is copied onto turns from their parent chat.
+      if (event.oldVersion < 3) {
+        const chatUser = new Map();
+        chats.openCursor().onsuccess = (e) => {
+          const cur = e.target.result;
+          if (cur) {
+            const v = cur.value;
+            chatUser.set(v.id, v.user);
+            if (v.updatedAt == null) v.updatedAt = v.createdAt || Date.now();
+            if (v.deleted == null) v.deleted = 0;
+            if (v.dirty == null) v.dirty = 0;
+            cur.update(v);
+            cur.continue();
+          } else {
+            // chats fully walked -> now backfill turns (user + metadata)
+            turns.openCursor().onsuccess = (te) => {
+              const tc = te.target.result;
+              if (!tc) return;
+              const tv = tc.value;
+              if (tv.user == null) tv.user = chatUser.get(tv.chatId) || '';
+              if (tv.updatedAt == null) tv.updatedAt = tv.createdAt || Date.now();
+              if (tv.deleted == null) tv.deleted = 0;
+              if (tv.dirty == null) tv.dirty = 0;
+              tc.update(tv);
+              tc.continue();
+            };
+          }
+        };
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -75,7 +127,8 @@ export async function createChat(user, key, title = '새 채팅') {
   const createdAt = Date.now();
   const id = uid();
   const enc = await encryptJSON(key, { title, pinned: false, folder: '' });
-  await wrapWrite(reqToPromise((await tx('chats', 'readwrite')).add({ id, user, createdAt, enc })));
+  await wrapWrite(reqToPromise((await tx('chats', 'readwrite'))
+    .add({ id, user, createdAt, updatedAt: createdAt, deleted: 0, dirty: 1, enc })));
   return { id, title, createdAt, pinned: false, folder: '' };
 }
 
@@ -85,6 +138,7 @@ export async function listChats(user, key) {
   const rows = await reqToPromise(idx.getAll(IDBKeyRange.only(user)));
   const out = [];
   for (const r of rows) {
+    if (r.deleted) continue; // hide tombstones
     let meta = { title: '(복호화 실패)', pinned: false, folder: '' };
     try { meta = { pinned: false, folder: '', ...(await decryptJSON(key, r.enc)) }; }
     catch { /* skip undecryptable */ }
@@ -100,12 +154,30 @@ export async function updateChatMeta(user, key, chat) {
     title: chat.title, pinned: !!chat.pinned, folder: chat.folder || '',
   });
   await wrapWrite(reqToPromise((await tx('chats', 'readwrite'))
-    .put({ id: chat.id, user, createdAt: chat.createdAt, enc })));
+    .put({ id: chat.id, user, createdAt: chat.createdAt, updatedAt: Date.now(), deleted: 0, dirty: 1, enc })));
 }
 // Back-compat alias.
 export const updateChatTitle = updateChatMeta;
 
 export async function deleteChat(chatId) {
+  if (syncEnabled) {
+    // Tombstone so the deletion propagates to other devices, then re-syncs away.
+    const store = await tx('chats', 'readwrite');
+    const row = await reqToPromise(store.get(chatId));
+    if (row) {
+      row.deleted = 1;
+      row.dirty = 1;
+      row.updatedAt = Date.now();
+      await reqToPromise((await tx('chats', 'readwrite')).put(row));
+    }
+    const tstore = await tx('turns', 'readwrite');
+    const keys = await reqToPromise(tstore.index('chatId').getAll(IDBKeyRange.only(chatId)));
+    for (const t of keys) {
+      t.deleted = 1; t.dirty = 1; t.updatedAt = Date.now();
+      await reqToPromise((await tx('turns', 'readwrite')).put(t));
+    }
+    return;
+  }
   await reqToPromise((await tx('chats', 'readwrite')).delete(chatId));
   const store = await tx('turns', 'readwrite');
   const idx = store.index('chatId');
@@ -119,15 +191,22 @@ function splitTurn(turn) {
   return { id, chatId, createdAt, payload };
 }
 
-export async function addTurn(key, turn) {
+export async function addTurn(key, turn, user) {
   const { id, chatId, createdAt, payload } = splitTurn(turn);
   const enc = await encryptJSON(key, payload);
-  await wrapWrite(reqToPromise((await tx('turns', 'readwrite')).put({ id, chatId, createdAt, enc })));
+  // Preserve user when updating an existing turn (caller may omit it).
+  let owner = user;
+  if (owner == null) {
+    const existing = await reqToPromise((await tx('turns', 'readonly')).get(id));
+    owner = existing ? existing.user : '';
+  }
+  await wrapWrite(reqToPromise((await tx('turns', 'readwrite'))
+    .put({ id, chatId, user: owner || '', createdAt, updatedAt: Date.now(), deleted: 0, dirty: 1, enc })));
   return turn;
 }
 
-export async function updateTurn(key, turn) {
-  return addTurn(key, turn);
+export async function updateTurn(key, turn, user) {
+  return addTurn(key, turn, user);
 }
 
 export async function listTurns(chatId, key) {
@@ -137,6 +216,7 @@ export async function listTurns(chatId, key) {
   rows.sort((a, b) => a.createdAt - b.createdAt);
   const out = [];
   for (const r of rows) {
+    if (r.deleted) continue; // hide tombstones
     try {
       const payload = await decryptJSON(key, r.enc);
       out.push({ id: r.id, chatId: r.chatId, createdAt: r.createdAt, ...payload });
@@ -191,7 +271,8 @@ export async function reencryptUserData(user, oldKey, newKey) {
     catch { continue; } // skip unreadable
     const enc = await encryptJSON(newKey, payload);
     await wrapWrite(reqToPromise((await tx('chats', 'readwrite'))
-      .put({ id: row.id, user, createdAt: row.createdAt, enc })));
+      .put({ id: row.id, user, createdAt: row.createdAt, updatedAt: Date.now(),
+             deleted: row.deleted || 0, dirty: 1, enc })));
 
     const turnRows = await reqToPromise(
       (await tx('turns', 'readonly')).index('chatId').getAll(IDBKeyRange.only(row.id))
@@ -202,7 +283,8 @@ export async function reencryptUserData(user, oldKey, newKey) {
       catch { continue; }
       const tenc = await encryptJSON(newKey, tp);
       await wrapWrite(reqToPromise((await tx('turns', 'readwrite'))
-        .put({ id: t.id, chatId: t.chatId, createdAt: t.createdAt, enc: tenc })));
+        .put({ id: t.id, chatId: t.chatId, user: t.user || user, createdAt: t.createdAt,
+               updatedAt: Date.now(), deleted: t.deleted || 0, dirty: 1, enc: tenc })));
     }
   }
 }
@@ -242,15 +324,173 @@ export async function importUserData(user, key, chatsArray) {
     const enc = await encryptJSON(key, {
       title: c.title || '가져온 채팅', pinned: !!c.pinned, folder: c.folder || '',
     });
+    const now = Date.now();
     await wrapWrite(reqToPromise((await tx('chats', 'readwrite'))
-      .put({ id: newChatId, user, createdAt: c.createdAt || Date.now(), enc })));
+      .put({ id: newChatId, user, createdAt: c.createdAt || now, updatedAt: now, deleted: 0, dirty: 1, enc })));
     for (const t of (c.turns || [])) {
       const { id: _id, createdAt, ...payload } = t;
       const tenc = await encryptJSON(key, payload);
       await wrapWrite(reqToPromise((await tx('turns', 'readwrite'))
-        .put({ id: uid(), chatId: newChatId, createdAt: createdAt || Date.now(), enc: tenc })));
+        .put({ id: uid(), chatId: newChatId, user, createdAt: createdAt || now,
+               updatedAt: now, deleted: 0, dirty: 1, enc: tenc })));
     }
     count++;
   }
   return count;
+}
+
+// ===========================================================================
+//  Sync support — generic "items" view over chats/turns/settings for the
+//  delta-sync layer (see sync.js). Items only ever carry CIPHERTEXT plus the
+//  routing/ordering fields the server needs to merge by last-write-wins.
+// ===========================================================================
+
+const META_SETTINGS = (user) => `settings:${user}`;
+const META_LASTSYNC = (user) => `lastSync:${user}`;
+
+// Read/replace this user's synced settings blob (kept in the `meta` store so it
+// rides along with chats/turns through the same sync pipeline).
+export async function loadSyncSettings(user, key) {
+  const row = await reqToPromise((await tx('meta', 'readonly')).get(META_SETTINGS(user)));
+  if (!row || row.deleted || !row.enc) return null;
+  try { return await decryptJSON(key, row.enc); }
+  catch { return null; }
+}
+
+export async function saveSyncSettings(user, key, settings) {
+  const enc = await encryptJSON(key, settings);
+  const prev = await reqToPromise((await tx('meta', 'readonly')).get(META_SETTINGS(user)));
+  await wrapWrite(reqToPromise((await tx('meta', 'readwrite')).put({
+    key: META_SETTINGS(user), user, type: 'settings',
+    createdAt: prev?.createdAt || Date.now(), updatedAt: Date.now(),
+    deleted: 0, dirty: 1, enc,
+  })));
+}
+
+export async function getLastSync(user) {
+  const row = await reqToPromise((await tx('meta', 'readonly')).get(META_LASTSYNC(user)));
+  return row?.value || 0;
+}
+
+export async function setLastSync(user, ts) {
+  await reqToPromise((await tx('meta', 'readwrite')).put({ key: META_LASTSYNC(user), value: ts }));
+}
+
+// Collect every locally-changed record for a user as wire items:
+//   { id, type:'chat'|'turn'|'settings', parentId, createdAt, updatedAt, deleted, iv, ct }
+export async function getDirtyItems(user) {
+  const items = [];
+
+  const dirtyChats = await reqToPromise((await tx('chats', 'readonly')).index('dirty').getAll(IDBKeyRange.only(1)));
+  for (const r of dirtyChats) {
+    if (r.user !== user) continue;
+    items.push({ id: r.id, type: 'chat', parentId: null, createdAt: r.createdAt,
+      updatedAt: r.updatedAt, deleted: r.deleted ? 1 : 0, iv: r.enc.iv, ct: r.enc.ct });
+  }
+
+  const dirtyTurns = await reqToPromise((await tx('turns', 'readonly')).index('dirty').getAll(IDBKeyRange.only(1)));
+  for (const r of dirtyTurns) {
+    if (r.user !== user) continue;
+    items.push({ id: r.id, type: 'turn', parentId: r.chatId, createdAt: r.createdAt,
+      updatedAt: r.updatedAt, deleted: r.deleted ? 1 : 0, iv: r.enc.iv, ct: r.enc.ct });
+  }
+
+  const settingsRow = await reqToPromise((await tx('meta', 'readonly')).get(META_SETTINGS(user)));
+  if (settingsRow && settingsRow.dirty) {
+    items.push({ id: 'settings', type: 'settings', parentId: null, createdAt: settingsRow.createdAt,
+      updatedAt: settingsRow.updatedAt, deleted: settingsRow.deleted ? 1 : 0,
+      iv: settingsRow.enc.iv, ct: settingsRow.enc.ct });
+  }
+
+  return items;
+}
+
+// After a successful push, clear dirty flags and adopt the server's authoritative
+// timestamps. Confirmed tombstones are pruned locally (the server keeps them).
+export async function markSynced(user, confirmed) {
+  for (const c of confirmed) {
+    if (c.type === 'chat') {
+      const row = await reqToPromise((await tx('chats', 'readonly')).get(c.id));
+      if (!row) continue;
+      if (row.deleted) { await reqToPromise((await tx('chats', 'readwrite')).delete(c.id)); continue; }
+      row.dirty = 0; row.updatedAt = c.updatedAt;
+      await reqToPromise((await tx('chats', 'readwrite')).put(row));
+    } else if (c.type === 'turn') {
+      const row = await reqToPromise((await tx('turns', 'readonly')).get(c.id));
+      if (!row) continue;
+      if (row.deleted) { await reqToPromise((await tx('turns', 'readwrite')).delete(c.id)); continue; }
+      row.dirty = 0; row.updatedAt = c.updatedAt;
+      await reqToPromise((await tx('turns', 'readwrite')).put(row));
+    } else if (c.type === 'settings') {
+      const row = await reqToPromise((await tx('meta', 'readonly')).get(META_SETTINGS(user)));
+      if (!row) continue;
+      row.dirty = 0; row.updatedAt = c.updatedAt;
+      await reqToPromise((await tx('meta', 'readwrite')).put(row));
+    }
+  }
+}
+
+// Apply items pulled from the server. Last-write-wins: a remote item is applied
+// only when it is strictly newer than the local copy AND the local copy isn't a
+// pending (dirty) change that is at least as new.
+export async function applyRemoteItems(user, items) {
+  let applied = 0;
+  for (const it of items) {
+    const store = it.type === 'turn' ? 'turns' : (it.type === 'chat' ? 'chats' : 'meta');
+    const id = it.type === 'settings' ? META_SETTINGS(user) : it.id;
+    const local = await reqToPromise((await tx(store, 'readonly')).get(id));
+
+    if (local) {
+      const localTs = local.updatedAt || local.createdAt || 0;
+      if (it.updatedAt <= localTs) continue;            // remote not newer -> keep local
+      if (local.dirty && localTs >= it.updatedAt) continue; // local pending wins on ties
+    }
+
+    if (it.deleted) {
+      if (it.type === 'settings') {
+        await reqToPromise((await tx('meta', 'readwrite')).put({
+          key: id, user, type: 'settings', createdAt: it.createdAt,
+          updatedAt: it.updatedAt, deleted: 1, dirty: 0, enc: null,
+        }));
+      } else if (local) {
+        await reqToPromise((await tx(store, 'readwrite')).delete(id));
+      }
+      applied++;
+      continue;
+    }
+
+    const enc = { iv: it.iv, ct: it.ct };
+    if (it.type === 'chat') {
+      await wrapWrite(reqToPromise((await tx('chats', 'readwrite')).put({
+        id: it.id, user, createdAt: it.createdAt, updatedAt: it.updatedAt, deleted: 0, dirty: 0, enc,
+      })));
+    } else if (it.type === 'turn') {
+      await wrapWrite(reqToPromise((await tx('turns', 'readwrite')).put({
+        id: it.id, chatId: it.parentId, user, createdAt: it.createdAt,
+        updatedAt: it.updatedAt, deleted: 0, dirty: 0, enc,
+      })));
+    } else {
+      await wrapWrite(reqToPromise((await tx('meta', 'readwrite')).put({
+        key: id, user, type: 'settings', createdAt: it.createdAt,
+        updatedAt: it.updatedAt, deleted: 0, dirty: 0, enc,
+      })));
+    }
+    applied++;
+  }
+  return applied;
+}
+
+// Flag all of a user's existing local data for upload (used the first time a
+// previously local-only account is linked to the sync server).
+export async function markAllDirty(user) {
+  const chatRows = await reqToPromise((await tx('chats', 'readonly')).index('user').getAll(IDBKeyRange.only(user)));
+  for (const r of chatRows) {
+    r.dirty = 1; if (r.updatedAt == null) r.updatedAt = r.createdAt || Date.now();
+    await reqToPromise((await tx('chats', 'readwrite')).put(r));
+  }
+  const turnRows = await reqToPromise((await tx('turns', 'readonly')).index('user').getAll(IDBKeyRange.only(user)));
+  for (const r of turnRows) {
+    r.dirty = 1; if (r.updatedAt == null) r.updatedAt = r.createdAt || Date.now();
+    await reqToPromise((await tx('turns', 'readwrite')).put(r));
+  }
 }

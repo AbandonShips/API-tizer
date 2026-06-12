@@ -7,11 +7,17 @@
 import {
   deriveKey, encryptJSON, decryptJSON,
   randomBytes, toB64, fromB64, PBKDF2_ITERATIONS,
+  deriveSyncKeys,
 } from './crypto.js';
+import { authParams, serverSignup, serverLogin } from './sync.js';
 
 const USERS_KEY = 'apitizer.users.v1';
 const VERIFIER_TEXT = 'apitizer-verify-v1';
 const MIN_PASSWORD_LENGTH = 8;
+// Per-device cache for online accounts: stores the (non-secret) KDF params plus
+// an encrypted verifier so the app can re-derive Key A and confirm the password
+// even when the sync server is briefly unreachable (offline-capable login).
+const ONLINE_PREFIX = 'apitizer.online.v1.';
 
 function loadUsers() {
   try { return JSON.parse(localStorage.getItem(USERS_KEY)) || {}; }
@@ -137,4 +143,114 @@ export async function commitPasswordChange(id, newKey, newSalt, iterations) {
   rec.iterations = iterations;
   rec.verifier = await encryptJSON(newKey, VERIFIER_TEXT);
   saveUsers(users);
+}
+
+// ===========================================================================
+//  Online (zero-knowledge sync) accounts
+// ===========================================================================
+// These accounts live on the sync server. The password derives two keys:
+//   Key A (encKey)  — encrypts all data, NEVER sent to the server.
+//   Key B (authToken) — the only secret sent, used purely to authenticate.
+// A small per-device cache keeps the KDF params + an encrypted verifier so the
+// app can still open offline; full sync resumes once the server is reachable.
+
+function loadOnlineCache(id) {
+  try { return JSON.parse(localStorage.getItem(ONLINE_PREFIX + normalizeId(id))) || null; }
+  catch { return null; }
+}
+function saveOnlineCache(id, data) {
+  localStorage.setItem(ONLINE_PREFIX + normalizeId(id), JSON.stringify(data));
+}
+
+async function cacheOnlineVerifier(id, displayName, encKey, kdfSalt, iterations) {
+  saveOnlineCache(id, {
+    displayName,
+    kdfSalt,
+    iterations,
+    verifier: await encryptJSON(encKey, VERIFIER_TEXT),
+    cachedAt: Date.now(),
+  });
+}
+
+// Create a brand-new online account on the sync server.
+export async function onlineSignup(username, password) {
+  const display = String(username || '').trim();
+  const id = normalizeId(username);
+  if (!id) throw new Error('아이디를 입력하세요.');
+  if (id.length < 2) throw new Error('아이디는 2자 이상이어야 합니다.');
+  const weak = passwordProblem(password);
+  if (weak) throw new Error(weak);
+
+  // Reject duplicates up-front (server also enforces this).
+  const params = await authParams(id);
+  if (params && params.exists) throw new Error('이미 존재하는 아이디입니다.');
+
+  const salt = randomBytes(16);
+  const iterations = PBKDF2_ITERATIONS;
+  const { encKey, authToken } = await deriveSyncKeys(password, salt, iterations);
+  const kdfSalt = toB64(salt);
+
+  const { token } = await serverSignup({ username: id, kdfSalt, kdfIterations: iterations, authToken });
+  await cacheOnlineVerifier(id, display, encKey, kdfSalt, iterations);
+
+  return { id, displayName: display, key: encKey, mode: 'online', token, authToken, kdfSalt, iterations, offline: false };
+}
+
+// Log in to an existing online account. Falls back to an offline-verified
+// session (token = null) if the server can't be reached but this device has a
+// cached verifier — the app stays usable and syncs when connectivity returns.
+export async function onlineLogin(username, password) {
+  const id = normalizeId(username);
+  if (!id) throw new Error('아이디를 입력하세요.');
+
+  let params;
+  try {
+    params = await authParams(id);
+  } catch (netErr) {
+    const cache = loadOnlineCache(id);
+    if (!cache) throw netErr; // no offline fallback available
+    return offlineLogin(id, password, cache);
+  }
+
+  if (!params || !params.exists) throw new Error('존재하지 않는 아이디입니다.');
+
+  const salt = fromB64(params.kdf_salt);
+  const iterations = params.kdf_iterations || PBKDF2_ITERATIONS;
+  const { encKey, authToken } = await deriveSyncKeys(password, salt, iterations);
+
+  let token;
+  try {
+    ({ token } = await serverLogin({ username: id, authToken }));
+  } catch (err) {
+    if (err.status === 401 || err.status === 403) throw new Error('비밀번호가 올바르지 않습니다.');
+    throw err;
+  }
+
+  const cache = loadOnlineCache(id);
+  const display = (cache && cache.displayName) || String(username).trim();
+  await cacheOnlineVerifier(id, display, encKey, params.kdf_salt, iterations);
+
+  return { id, displayName: display, key: encKey, mode: 'online', token, authToken, kdfSalt: params.kdf_salt, iterations, offline: false };
+}
+
+async function offlineLogin(id, password, cache) {
+  const salt = fromB64(cache.kdfSalt);
+  const { encKey, authToken } = await deriveSyncKeys(password, salt, cache.iterations || PBKDF2_ITERATIONS);
+  try {
+    const v = await decryptJSON(encKey, cache.verifier);
+    if (v !== VERIFIER_TEXT) throw new Error('mismatch');
+  } catch {
+    throw new Error('비밀번호가 올바르지 않습니다.');
+  }
+  return {
+    id, displayName: cache.displayName || id, key: encKey, mode: 'online',
+    token: null, authToken, kdfSalt: cache.kdfSalt, iterations: cache.iterations || PBKDF2_ITERATIONS,
+    offline: true,
+  };
+}
+
+// True if this device has previously logged this online account in (enables a
+// faster offline path / UI hints).
+export function hasOnlineCache(username) {
+  return !!loadOnlineCache(username);
 }

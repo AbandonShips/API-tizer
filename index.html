@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#0b0e14" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://api.openai.com https://api.anthropic.com https://generativelanguage.googleapis.com https://api.x.ai http://localhost:* http://127.0.0.1:*; object-src 'none'; base-uri 'self'; form-action 'none'" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://api.openai.com https://api.anthropic.com https://generativelanguage.googleapis.com https://api.x.ai https://*.workers.dev http://localhost:* http://127.0.0.1:*; object-src 'none'; base-uri 'self'; form-action 'none'" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -18,7 +18,16 @@
     <div id="authScreen" class="auth-screen">
       <div class="auth-card">
         <img class="auth-logo" src="./apitizer_logo.png" alt="API-Tizer" />
-        <p class="auth-sub">모든 데이터는 이 브라우저에 암호화되어 저장됩니다.</p>
+        <p class="auth-sub" id="authSub">여러 기기에서 안전하게 동기화됩니다. (영지식 암호화)</p>
+        <div class="seg auth-mode" id="authModeToggle">
+          <button type="button" class="seg-btn" data-mode="online" title="여러 기기에서 자동 동기화 (서버에는 암호문만 저장)">☁ 온라인 동기화</button>
+          <button type="button" class="seg-btn" data-mode="local" title="이 브라우저에만 저장 (동기화 안 함)">💻 이 기기만</button>
+        </div>
+        <details id="syncConfig" class="sync-config">
+          <summary>동기화 서버 설정</summary>
+          <input id="syncEndpoint" class="auth-input" type="url" autocomplete="off" placeholder="https://api-tizer-sync.이름.workers.dev" />
+          <p class="muted">Cloudflare Worker 주소를 입력하세요. 배포 방법은 <code>worker/README.md</code> 참고.</p>
+        </details>
         <div class="auth-fields">
           <input id="authUser" class="auth-input" type="text" autocomplete="username" placeholder="아이디" />
             <input id="authPass" class="auth-input" type="password" autocomplete="current-password" placeholder="비밀번호" />
@@ -63,6 +72,10 @@
           <div class="user-row">
             <span class="user-badge" id="userBadge"></span>
             <span class="user-name" id="userName"></span>
+          </div>
+          <div class="sync-row" id="syncRow" hidden>
+            <span class="sync-status" id="syncStatus"></span>
+            <button id="syncNowBtn" class="btn btn-ghost btn-sm" title="지금 동기화">⟳ 동기화</button>
           </div>
           <button id="settingsBtn" class="btn btn-ghost btn-block">⚙️ 설정</button>
           <button id="logoutBtn" class="btn btn-ghost btn-block">🔒 로그아웃</button>

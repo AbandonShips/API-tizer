@@ -60,3 +60,56 @@ export async function decryptJSON(key, env) {
   const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
   return JSON.parse(decoder.decode(pt));
 }
+
+// ---------------------------------------------------------------------------
+// Zero-knowledge sync key derivation
+// ---------------------------------------------------------------------------
+// From one master password we deterministically derive TWO independent keys
+// via PBKDF2 (slow, salted) followed by HKDF (cheap domain separation):
+//
+//   Key A  — AES-GCM data key. Encrypts/decrypts everything. NEVER leaves the
+//            device; the server never sees it.
+//   Key B  — auth token. The ONLY thing sent to the server, used purely to
+//            prove "I know the password". Because it comes from a separate
+//            HKDF context it cannot be used to derive Key A, so even a fully
+//            compromised server learns nothing about the user's data.
+//
+// The same (password, salt, iterations) on any device yields the same Key A,
+// so a phone can decrypt what a laptop encrypted — that is what enables sync.
+
+const ENC_INFO = encoder.encode('apitizer-enc-key-v1');
+const AUTH_INFO = encoder.encode('apitizer-auth-key-v1');
+
+// PBKDF2(password) -> 256 raw bits, imported as an HKDF master key.
+async function deriveMasterHkdfKey(password, saltBytes, iterations) {
+  const baseKey = await crypto.subtle.importKey(
+    'raw', encoder.encode(password), 'PBKDF2', false, ['deriveBits']
+  );
+  const masterBits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: saltBytes, iterations, hash: 'SHA-256' },
+    baseKey, 256
+  );
+  return crypto.subtle.importKey('raw', masterBits, 'HKDF', false, ['deriveKey', 'deriveBits']);
+}
+
+// Derive { encKey, authToken } for zero-knowledge sync.
+//  - encKey:    non-extractable AES-GCM CryptoKey (Key A). Stays on device.
+//  - authToken: base64 string (Key B). Safe to send to the server.
+export async function deriveSyncKeys(password, saltBytes, iterations = PBKDF2_ITERATIONS) {
+  const master = await deriveMasterHkdfKey(password, saltBytes, iterations);
+
+  const encKey = await crypto.subtle.deriveKey(
+    { name: 'HKDF', hash: 'SHA-256', salt: saltBytes, info: ENC_INFO },
+    master,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+
+  const authBits = await crypto.subtle.deriveBits(
+    { name: 'HKDF', hash: 'SHA-256', salt: saltBytes, info: AUTH_INFO },
+    master, 256
+  );
+
+  return { encKey, authToken: toB64(new Uint8Array(authBits)) };
+}
