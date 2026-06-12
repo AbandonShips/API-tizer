@@ -302,19 +302,29 @@ function applyLayoutMode() {
   const btn = $('#layoutToggle');
   if (btn) {
     btn.hidden = false;
-    // Compact icon-only button that offers the *opposite* of what is currently shown.
+    // Compact icon-only button: auto mode can be overridden once; any forced
+    // mode returns to auto so PC/mobile follows the device again.
     btn.textContent = mobile ? '\uD83D\uDDA5\uFE0F' : '\uD83D\uDCF1';
-    btn.setAttribute('aria-label', mobile ? 'PC \uBCF4\uAE30\uB85C \uC804\uD658' : '\uBAA8\uBC14\uC77C \uBCF4\uAE30\uB85C \uC804\uD658');
-    btn.setAttribute('data-tip', mobile ? 'PC \uB808\uC774\uC544\uC6C3\uC73C\uB85C \uC804\uD658' : '\uBAA8\uBC14\uC77C \uB808\uC774\uC544\uC6C3\uC73C\uB85C \uC804\uD658');
+    if (layoutMode === 'auto') {
+      btn.setAttribute('aria-label', mobile ? 'PC 보기로 전환 (현재: 자동)' : '모바일 보기로 전환 (현재: 자동)');
+      btn.setAttribute('data-tip', mobile ? 'PC 레이아웃으로 전환 (현재: 자동)' : '모바일 레이아웃으로 전환 (현재: 자동)');
+    } else {
+      btn.setAttribute('aria-label', '자동 레이아웃으로 복귀');
+      btn.setAttribute('data-tip', '자동 레이아웃으로 복귀');
+    }
   }
 }
 function setupLayoutToggle() {
   const btn = $('#layoutToggle');
   btn.addEventListener('click', () => {
-    const mobileNow = document.body.classList.contains('is-mobile');
-    // Lock to the explicit opposite of the current rendering.
-    layoutMode = mobileNow ? 'desktop' : 'mobile';
-    localStorage.setItem(LAYOUT_KEY, layoutMode);
+    if (layoutMode === 'auto') {
+      const mobileNow = document.body.classList.contains('is-mobile');
+      layoutMode = mobileNow ? 'desktop' : 'mobile';
+    } else {
+      layoutMode = 'auto';
+    }
+    if (layoutMode === 'auto') localStorage.removeItem(LAYOUT_KEY);
+    else localStorage.setItem(LAYOUT_KEY, layoutMode);
     applyLayoutMode();
   });
   // Re-evaluate on rotate/resize (only matters while in `auto`).
@@ -1162,6 +1172,7 @@ async function openChat(id) {
 async function removeChat(id) {
   if (!confirm('이 채팅을 삭제할까요?')) return;
   await deleteChat(id);
+  scheduleSync();
   chats = chats.filter((c) => c.id !== id);
   if (currentChat && currentChat.id === id) {
     // The currently-open chat was deleted → return to an empty (no-chat) state.

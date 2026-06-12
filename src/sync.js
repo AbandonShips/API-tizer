@@ -29,7 +29,7 @@ export async function decryptPayload(key, envelope) {
 // Set your deployed Worker URL here once, or override per-device at runtime via
 // localStorage('apitizer.sync.endpoint') (handy for testing a staging worker).
 // Example: 'https://api-tizer-sync.YOURNAME.workers.dev'
-export const DEFAULT_ENDPOINT = '';
+export const DEFAULT_ENDPOINT = 'https://api-tizer-sync.kangmin1152.workers.dev';
 const ENDPOINT_KEY = 'apitizer.sync.endpoint';
 
 export function getEndpoint() {

@@ -37,7 +37,7 @@
 4. **(권장) CORS 출처 제한** — `wrangler.toml` 의 `ALLOW_ORIGIN` 을 실제 앱 주소로 바꿉니다.
    ```toml
    [vars]
-   ALLOW_ORIGIN = "https://YOURNAME.github.io"
+   ALLOW_ORIGIN = "https://abandonships.github.io,http://localhost:8753,http://127.0.0.1:8753"
    ```
 
 5. **배포**
@@ -50,10 +50,10 @@
 
 배포된 Worker URL 을 앱에서 한 번만 등록하면 됩니다. 두 가지 방법 중 택1:
 
-- **코드에 고정**: `src/sync.js` 의 `DEFAULT_ENDPOINT` 값에 URL 을 넣습니다.
+- **코드에 고정**: `src/sync.js` 의 `DEFAULT_ENDPOINT` 값에 URL 을 넣습니다. 현재 기본값은 `https://api-tizer-sync.kangmin1152.workers.dev` 입니다.
 - **기기별 설정**: 브라우저 콘솔에서
   ```js
-  localStorage.setItem('apitizer.sync.endpoint', 'https://api-tizer-sync.YOURNAME.workers.dev')
+   localStorage.setItem('apitizer.sync.endpoint', 'https://api-tizer-sync.kangmin1152.workers.dev')
   ```
 
 또한 `index.html` 의 CSP `connect-src` 에 Worker 도메인이 포함돼야 합니다.
