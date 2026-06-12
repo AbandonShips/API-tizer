@@ -1,6 +1,8 @@
 # Local secrets and backups
 .env
 .env.*
+.dev.vars
+.dev.vars.*
 *.pem
 *.key
 *.p12
@@ -19,6 +21,14 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .tmp-edge*/
+.wrangler/
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.sqlite
+*.sqlite3
+*.db
 
 # OS/editor noise
 .DS_Store

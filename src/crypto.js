@@ -95,14 +95,14 @@ async function deriveMasterHkdfKey(password, saltBytes, iterations) {
 // Derive { encKey, authToken } for zero-knowledge sync.
 //  - encKey:    non-extractable AES-GCM CryptoKey (Key A). Stays on device.
 //  - authToken: base64 string (Key B). Safe to send to the server.
-export async function deriveSyncKeys(password, saltBytes, iterations = PBKDF2_ITERATIONS) {
+export async function deriveSyncKeys(password, saltBytes, iterations = PBKDF2_ITERATIONS, extractable = false) {
   const master = await deriveMasterHkdfKey(password, saltBytes, iterations);
 
   const encKey = await crypto.subtle.deriveKey(
     { name: 'HKDF', hash: 'SHA-256', salt: saltBytes, info: ENC_INFO },
     master,
     { name: 'AES-GCM', length: 256 },
-    false,
+    extractable,
     ['encrypt', 'decrypt']
   );
 

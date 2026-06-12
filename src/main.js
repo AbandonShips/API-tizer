@@ -17,7 +17,7 @@ import {
 import {
   encryptJSON, decryptJSON, deriveKey, randomBytes, toB64, fromB64, PBKDF2_ITERATIONS,
 } from './crypto.js';
-import { runSync, isConfigured as syncConfigured, getEndpoint, setEndpoint } from './sync.js';
+import { runSync, isConfigured as syncConfigured, getEndpoint, setEndpoint, serverLogin } from './sync.js';
 import { streamChat, supportsWebSearch } from './providers.js';
 import { renderMarkdown } from './markdown.js';
 
@@ -76,6 +76,8 @@ let chatSearchTerm = '';
 let searchMatchIds = null;   // Set of chatIds matching a content search, or null
 const REMEMBER_KEY = 'apitizer.lastUser';
 const LEGACY_AUTOLOGIN_KEY = 'apitizer.autologin';
+const AUTO_LOGIN_KEY = 'apitizer.autoLogin.v1';
+const AUTO_LOGIN_SECRET_KEY = 'apitizer.autoLogin.secret.v1';
 const LOGIN_THROTTLE_KEY = 'apitizer.loginThrottle.v1';
 const LOGIN_MAX_FAILURES = 5;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
@@ -102,6 +104,7 @@ initAuth();
 
 function initAppEvents() {
   $('#newChatBtn').addEventListener('click', () => { newChat(); closeDrawer(); });
+  $('#brandHomeBtn').addEventListener('click', () => { newChat(); closeDrawer(); });
   $('#settingsBtn').addEventListener('click', openSettings);
   $('#exportBtn').addEventListener('click', exportChat);
   $('#logoutBtn').addEventListener('click', logout);
@@ -446,6 +449,7 @@ function initAuth() {
   }
 
   localStorage.removeItem(LEGACY_AUTOLOGIN_KEY);
+  tryAutoLogin();
 }
 
 function applyAuthMode() {
@@ -470,8 +474,8 @@ function applyLoginMode() {
   const sub = $('#authSub');
   if (sub) {
     sub.textContent = online
-      ? '여러 기기에서 안전하게 동기화됩니다. (영지식 암호화 · 서버엔 암호문만 저장)'
-      : '이 브라우저에만 암호화되어 저장됩니다. (동기화 안 함)';
+      ? '여러 기기에서 안전하게 동기화됩니다.'
+      : '이 브라우저에만 암호화되어 저장됩니다.';
   }
 }
 
@@ -485,6 +489,7 @@ async function submitAuth() {
   const username = $('#authUser').value.trim();
   const password = $('#authPass').value;
   const submitBtn = $('#authSubmit');
+  const autoLoginRequested = $('#autoLogin').checked;
   showAuthError('');
   if (!username || !password) { showAuthError('아이디와 비밀번호를 입력하세요.'); return; }
 
@@ -508,17 +513,17 @@ async function submitAuth() {
       if (authMode === 'signup') {
         const pass2 = $('#authPass2').value;
         if (password !== pass2) throw new Error('비밀번호가 일치하지 않습니다.');
-        s = await onlineSignup(username, password);
+        s = await onlineSignup(username, password, { extractable: autoLoginRequested });
       } else {
-        s = await onlineLogin(username, password);
+        s = await onlineLogin(username, password, { extractable: autoLoginRequested });
       }
     } else if (authMode === 'signup') {
       const pass2 = $('#authPass2').value;
       if (password !== pass2) throw new Error('비밀번호가 일치하지 않습니다.');
-      s = await signup(username, password);
+      s = await signup(username, password, { extractable: autoLoginRequested });
       s.mode = 'local';
     } else {
-      s = await login(username, password);
+      s = await login(username, password, { extractable: autoLoginRequested });
       s.mode = 'local';
     }
     clearLoginFailures(username);
@@ -526,10 +531,108 @@ async function submitAuth() {
     if ($('#rememberId').checked) localStorage.setItem(REMEMBER_KEY, s.displayName);
     else localStorage.removeItem(REMEMBER_KEY);
     localStorage.removeItem(LEGACY_AUTOLOGIN_KEY);
+    if (autoLoginRequested) await saveAutoLoginSession(s);
+    else clearAutoLoginSession();
     await onAuthed(s);
   } catch (err) {
     if (authMode === 'login') recordLoginFailure(username);
     showAuthError(String(err.message || err));
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = prevText;
+  }
+}
+
+async function autoLoginCryptoKey() {
+  let secret = localStorage.getItem(AUTO_LOGIN_SECRET_KEY);
+  if (!secret) {
+    secret = toB64(randomBytes(32));
+    localStorage.setItem(AUTO_LOGIN_SECRET_KEY, secret);
+  }
+  return crypto.subtle.importKey('raw', fromB64(secret), { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+}
+
+async function exportSessionKey(key) {
+  const raw = await crypto.subtle.exportKey('raw', key);
+  return toB64(new Uint8Array(raw));
+}
+
+async function importSessionKey(rawKey) {
+  return crypto.subtle.importKey('raw', fromB64(rawKey), { name: 'AES-GCM' }, true, ['encrypt', 'decrypt']);
+}
+
+async function saveAutoLoginSession(s) {
+  const payload = {
+    id: s.id,
+    displayName: s.displayName,
+    mode: s.mode,
+    key: await exportSessionKey(s.key),
+    token: s.token || null,
+    authToken: s.authToken || null,
+    kdfSalt: s.kdfSalt || null,
+    iterations: s.iterations || null,
+    savedAt: Date.now(),
+  };
+  const env = await encryptJSON(await autoLoginCryptoKey(), payload);
+  localStorage.setItem(AUTO_LOGIN_KEY, JSON.stringify(env));
+}
+
+function clearAutoLoginSession() {
+  localStorage.removeItem(AUTO_LOGIN_KEY);
+  localStorage.removeItem(AUTO_LOGIN_SECRET_KEY);
+  const checkbox = $('#autoLogin');
+  if (checkbox) checkbox.checked = false;
+}
+
+async function tryAutoLogin() {
+  const raw = localStorage.getItem(AUTO_LOGIN_KEY);
+  if (!raw || session) return false;
+  const submitBtn = $('#authSubmit');
+  const prevText = submitBtn.textContent;
+  submitBtn.disabled = true;
+  submitBtn.textContent = '자동 로그인 중…';
+  try {
+    const saved = await decryptJSON(await autoLoginCryptoKey(), JSON.parse(raw));
+    const s = {
+      id: saved.id,
+      displayName: saved.displayName || saved.id,
+      mode: saved.mode || 'local',
+      key: await importSessionKey(saved.key),
+      token: saved.token || null,
+      authToken: saved.authToken || null,
+      kdfSalt: saved.kdfSalt || null,
+      iterations: saved.iterations || null,
+      offline: false,
+    };
+    if (s.mode === 'online' && s.authToken) {
+      try {
+        const username = String(s.id || '').replace(/^online:/, '');
+        const { token } = await serverLogin({ username, authToken: s.authToken });
+        s.id = username;
+        s.token = token;
+        await saveAutoLoginSession(s);
+      } catch (err) {
+        if (err && (err.status === 401 || err.status === 403)) {
+          clearAutoLoginSession();
+          showAuthError('자동 로그인 정보가 만료되었습니다. 다시 로그인하세요.');
+          return false;
+        }
+        s.offline = true;
+        s.token = s.token || null;
+      }
+    }
+    $('#autoLogin').checked = true;
+    if (s.displayName) {
+      $('#authUser').value = s.displayName;
+      $('#rememberId').checked = true;
+      localStorage.setItem(REMEMBER_KEY, s.displayName);
+    }
+    await onAuthed(s);
+    return true;
+  } catch {
+    clearAutoLoginSession();
+    showAuthError('자동 로그인 정보를 읽지 못했습니다. 다시 로그인하세요.');
+    return false;
   } finally {
     submitBtn.disabled = false;
     submitBtn.textContent = prevText;
@@ -687,7 +790,7 @@ function setSyncStatus(state, detail) {
   const el = $('#syncStatus');
   if (!el) return;
   const map = {
-    syncing: '⟳ 동기화 중…',
+    syncing: '↻ 동기화 중…',
     synced: '✓ 동기화됨',
     offline: '⚠ 오프라인 (로컬 사용 중)',
     error: '⚠ 동기화 실패',
@@ -773,6 +876,7 @@ function showAuthScreen() {
 
 function logout() {
   if (!confirm('로그아웃할까요? 다시 로그인하려면 비밀번호가 필요합니다.')) return;
+  clearAutoLoginSession();
   clearSessionState();
   showAuthScreen();
 }
@@ -1583,7 +1687,7 @@ async function send() {
   const active = enabledModels(settings);
   if (!active.length) { alert('활성화된 모델이 없습니다. 설정 또는 하단 칩에서 모델을 켜주세요.'); return; }
 
-  const title = text ? text.slice(0, 40) : '📎 첨부 파일';
+  const title = text ? text.slice(0, 40) : '첨부 파일';
 
   // Ensure a chat room exists
   if (!currentChat) {
@@ -2079,6 +2183,7 @@ async function deleteCurrentAccount() {
   if (localStorage.getItem(REMEMBER_KEY) && session.displayName === localStorage.getItem(REMEMBER_KEY)) {
     localStorage.removeItem(REMEMBER_KEY);
   }
+  clearAutoLoginSession();
   deleteAccount(id);
   clearSessionState();
   showAuthScreen();
@@ -2132,6 +2237,7 @@ async function submitPwChange() {
     await commitPasswordChange(session.id, newKey, newSalt, iterations);
     session.key = newKey;
     localStorage.removeItem(LEGACY_AUTOLOGIN_KEY);
+    clearAutoLoginSession();
     closePwModal();
     $('#saveHint').textContent = '비밀번호 변경 완료 ✓';
   } catch (err) {

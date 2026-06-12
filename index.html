@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#0b0e14" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://api.openai.com https://api.anthropic.com https://generativelanguage.googleapis.com https://api.x.ai https://*.workers.dev http://localhost:* http://127.0.0.1:*; object-src 'none'; base-uri 'self'; form-action 'none'" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; worker-src 'self' blob: https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://api.openai.com https://api.anthropic.com https://generativelanguage.googleapis.com https://api.x.ai https://*.workers.dev http://localhost:* http://127.0.0.1:*; object-src 'none'; base-uri 'self'; form-action 'none'" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -35,6 +35,8 @@
         </div>
         <p id="authError" class="auth-error" hidden></p>
         <label class="auth-check"><input type="checkbox" id="rememberId" /> 아이디 기억</label>
+        <label class="auth-check"><input type="checkbox" id="autoLogin" /> 이 기기에서 자동 로그인</label>
+        <p class="auth-check-warn">개인 기기에서만 사용하세요. 로그아웃하면 자동 로그인 정보가 삭제됩니다.</p>
         <button id="authSubmit" class="btn btn-primary btn-block">로그인</button>
         <p class="auth-switch">
           <span id="authSwitchText">계정이 없으신가요?</span>
@@ -50,10 +52,10 @@
       <!-- Sidebar -->
       <aside id="sidebar">
         <div class="sidebar-head">
-          <div class="brand">
+          <button id="brandHomeBtn" class="brand" type="button" title="새 채팅 시작" aria-label="새 채팅 시작">
             <img class="brand-logo" src="./apitizer_mark.png" alt="" />
             <span>API-Tizer</span>
-          </div>
+          </button>
           <button id="newChatBtn" class="btn btn-primary btn-block" title="새 채팅 (앞선 내용 잊고 토큰 절약)">
             + 새 채팅
           </button>
@@ -75,7 +77,7 @@
           </div>
           <div class="sync-row" id="syncRow" hidden>
             <span class="sync-status" id="syncStatus"></span>
-            <button id="syncNowBtn" class="btn btn-ghost btn-sm" title="지금 동기화">⟳ 동기화</button>
+            <button id="syncNowBtn" class="btn btn-ghost btn-sm" title="지금 동기화">↻ 동기화</button>
           </div>
           <button id="settingsBtn" class="btn btn-ghost btn-block">⚙️ 설정</button>
           <button id="logoutBtn" class="btn btn-ghost btn-block">🔒 로그아웃</button>
@@ -113,7 +115,11 @@
           <div id="attachPreview" class="attach-preview" hidden></div>
           <div class="composer-inner">
             <div class="composer-tools">
-              <button id="attachBtn" class="icon-attach" title="파일·이미지 첨부 (드래그/붙여넣기도 가능)">📎</button>
+              <button id="attachBtn" class="icon-attach" title="파일·이미지 첨부 (드래그/붙여넣기도 가능)" aria-label="파일 첨부">
+                <svg class="attach-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66L9.41 17.41a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                </svg>
+              </button>
               <button id="webSearchBtn" class="icon-attach" title="웹 검색 (지원 모델: ChatGPT·Claude·Gemini·Grok)"><span class="gico">🌐</span></button>
               <button id="promptLibBtn" class="icon-attach" title="프롬프트 라이브러리 (자주 쓰는 프롬프트 저장·삽입)">📚</button>
               <button id="expandBtn" class="icon-attach" title="입력창 확대 / 축소">⤢</button>
@@ -256,7 +262,7 @@
             <ul class="help-list">
               <li><b>마스터 요약</b> — 지정한 모델이 모든 답을 하나로 정리하고 소수 의견을 덧붙입니다.</li>
               <li><b>🌐 웹 검색</b> — 지원 모델(ChatGPT·Claude·Gemini·Grok)이 실시간 검색 후 출처를 답니다.</li>
-              <li><b>� 프롬프트 라이브러리</b> — 자주 쓰는 프롬프트를 저장해 두고 입력창에 한 번에 넣습니다.</li>
+              <li><b>📚 프롬프트 라이브러리</b> — 자주 쓰는 프롬프트를 저장해 두고 입력창에 한 번에 넣습니다.</li>
               <li><b>📌 고정 / 📁 폴더</b> — 채팅을 상단 고정하거나 폴더로 분류합니다.</li>
               <li><b>토큰·비용</b> — 답변 헤더에 추정 토큰 수와 대략적 비용을 표시합니다(설정에서 끄기 가능).</li>
               <li><b>출처 [n]</b> — 본문의 각주 번호를 클릭하면 해당 출처가 새 탭으로 열립니다.</li>
@@ -267,9 +273,10 @@
           <section class="settings-block">
             <h3>📱 모바일 · 화면 전환</h3>
             <ul class="help-list">
-              <li><b>오른쪽 아래 버튼</b> — <b>🖥️ PC 보기 / 📱 모바일 보기</b> 로 레이아웃을 직접 바꿉니다. 화면 크기에 따라 자동으로도 전환됩니다.</li>
-              <li><b>휴대폰 접속</b> — 같은 와이파이에서 <code>http://(PC주소):8753</code> 로 접속합니다. 서버를 켜면 콘솔에 정확한 주소가 표시됩니다.</li>
-              <li><b>주의</b> — 보안 정책상 <code>localhost</code> 가 아닌 일반 http 주소에서는 로그인·암호화가 막힐 수 있습니다. 휴대폰에서 제대로 쓰려면 HTTPS 터널(cloudflared·ngrok 등)이 필요합니다.</li>
+              <li><b>상단 전환 버튼</b> — 상단 바의 <b>🖥️ / 📱</b> 버튼으로 PC·모바일 레이아웃을 직접 고정할 수 있습니다. 다시 누르면 자동 모드로 돌아갑니다.</li>
+              <li><b>권장 접속 방식</b> — 배포 주소(<code>https://abandonships.github.io/API-tizer/</code>)로 접속하면 HTTPS 환경에서 로그인·암호화·온라인 동기화를 바로 사용할 수 있습니다.</li>
+              <li><b>로컬 개발에서 휴대폰 접속</b> — 같은 와이파이의 <code>http://(PC주소):8753</code> 는 화면 확인용으로는 가능하지만, 일반 HTTP 특성상 로그인·암호화가 제한될 수 있습니다. 실제 로그인 테스트는 HTTPS 터널(cloudflared/ngrok) 또는 배포 주소를 사용하세요.</li>
+              <li><b>동기화 서버</b> — 로그인 화면의 <code>동기화 서버 설정</code>에서 Worker URL을 바꾸면 해당 기기에서만 다른 서버를 사용합니다.</li>
             </ul>
           </section>
         </div>
@@ -301,8 +308,6 @@
         </div>
       </div>
     </div>
-
-    <!-- Floating PC ⇄ Mobile layout switch -->
 
     <script type="module" src="./src/main.js"></script>
   </body>

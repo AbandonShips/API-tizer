@@ -59,7 +59,7 @@ export function listUsernames() {
     .map((u) => u.displayName);
 }
 
-export async function signup(username, password) {
+export async function signup(username, password, options = {}) {
   const display = String(username || '').trim();
   const id = normalizeId(username);
   if (!id) throw new Error('아이디를 입력하세요.');
@@ -72,7 +72,7 @@ export async function signup(username, password) {
 
   const salt = randomBytes(16);
   const iterations = PBKDF2_ITERATIONS;
-  const key = await deriveKey(password, salt, iterations);
+  const key = await deriveKey(password, salt, iterations, !!options.extractable);
   const verifier = await encryptJSON(key, VERIFIER_TEXT);
 
   users[id] = {
@@ -83,13 +83,13 @@ export async function signup(username, password) {
   return { id, displayName: display, key };
 }
 
-export async function login(username, password) {
+export async function login(username, password, options = {}) {
   const id = normalizeId(username);
   const users = loadUsers();
   const rec = users[id];
   if (!rec) throw new Error('존재하지 않는 아이디입니다.');
 
-  const key = await deriveKey(password, fromB64(rec.salt), rec.iterations || PBKDF2_ITERATIONS);
+  const key = await deriveKey(password, fromB64(rec.salt), rec.iterations || PBKDF2_ITERATIONS, !!options.extractable);
   try {
     const v = await decryptJSON(key, rec.verifier);
     if (v !== VERIFIER_TEXT) throw new Error('mismatch');
@@ -173,7 +173,7 @@ async function cacheOnlineVerifier(id, displayName, encKey, kdfSalt, iterations)
 }
 
 // Create a brand-new online account on the sync server.
-export async function onlineSignup(username, password) {
+export async function onlineSignup(username, password, options = {}) {
   const display = String(username || '').trim();
   const id = normalizeId(username);
   if (!id) throw new Error('아이디를 입력하세요.');
@@ -187,7 +187,7 @@ export async function onlineSignup(username, password) {
 
   const salt = randomBytes(16);
   const iterations = PBKDF2_ITERATIONS;
-  const { encKey, authToken } = await deriveSyncKeys(password, salt, iterations);
+  const { encKey, authToken } = await deriveSyncKeys(password, salt, iterations, !!options.extractable);
   const kdfSalt = toB64(salt);
 
   const { token } = await serverSignup({ username: id, kdfSalt, kdfIterations: iterations, authToken });
@@ -199,7 +199,7 @@ export async function onlineSignup(username, password) {
 // Log in to an existing online account. Falls back to an offline-verified
 // session (token = null) if the server can't be reached but this device has a
 // cached verifier — the app stays usable and syncs when connectivity returns.
-export async function onlineLogin(username, password) {
+export async function onlineLogin(username, password, options = {}) {
   const id = normalizeId(username);
   if (!id) throw new Error('아이디를 입력하세요.');
 
@@ -209,14 +209,14 @@ export async function onlineLogin(username, password) {
   } catch (netErr) {
     const cache = loadOnlineCache(id);
     if (!cache) throw netErr; // no offline fallback available
-    return offlineLogin(id, password, cache);
+    return offlineLogin(id, password, cache, options);
   }
 
   if (!params || !params.exists) throw new Error('존재하지 않는 아이디입니다.');
 
   const salt = fromB64(params.kdf_salt);
   const iterations = params.kdf_iterations || PBKDF2_ITERATIONS;
-  const { encKey, authToken } = await deriveSyncKeys(password, salt, iterations);
+  const { encKey, authToken } = await deriveSyncKeys(password, salt, iterations, !!options.extractable);
 
   let token;
   try {
@@ -233,9 +233,9 @@ export async function onlineLogin(username, password) {
   return { id, displayName: display, key: encKey, mode: 'online', token, authToken, kdfSalt: params.kdf_salt, iterations, offline: false };
 }
 
-async function offlineLogin(id, password, cache) {
+async function offlineLogin(id, password, cache, options = {}) {
   const salt = fromB64(cache.kdfSalt);
-  const { encKey, authToken } = await deriveSyncKeys(password, salt, cache.iterations || PBKDF2_ITERATIONS);
+  const { encKey, authToken } = await deriveSyncKeys(password, salt, cache.iterations || PBKDF2_ITERATIONS, !!options.extractable);
   try {
     const v = await decryptJSON(encKey, cache.verifier);
     if (v !== VERIFIER_TEXT) throw new Error('mismatch');
