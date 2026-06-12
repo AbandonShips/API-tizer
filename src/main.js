@@ -7,14 +7,17 @@ import {
   createChat, listChats, updateChatMeta, deleteChat,
   addTurn, updateTurn, listTurns, clearUserData, estimateUsage,
   reencryptUserData, exportUserData, importUserData, uid,
+  setSyncEnabled, loadSyncSettings, saveSyncSettings,
 } from './db.js';
 import {
   hasAnyUser, signup, login, deleteAccount, userExists,
   preparePasswordChange, commitPasswordChange,
+  onlineSignup, onlineLogin,
 } from './auth.js';
 import {
   encryptJSON, decryptJSON, deriveKey, randomBytes, toB64, fromB64, PBKDF2_ITERATIONS,
 } from './crypto.js';
+import { runSync, isConfigured as syncConfigured, getEndpoint, setEndpoint } from './sync.js';
 import { streamChat, supportsWebSearch } from './providers.js';
 import { renderMarkdown } from './markdown.js';
 
@@ -45,6 +48,10 @@ let turns = [];
 let activeController = null; // AbortController for in-flight send
 const SETTINGS_PREFIX = 'apitizer.settings.';
 let authMode = 'login'; // 'login' | 'signup'
+// Online (synced) vs local-only login. Default to online so new devices sync
+// out of the box; the user can flip the toggle to stay fully local.
+const LOGIN_MODE_KEY = 'apitizer.loginMode';
+let loginMode = localStorage.getItem(LOGIN_MODE_KEY) || 'online'; // 'online' | 'local'
 
 // ---------- elements ----------
 const messagesEl = $('#messages');
@@ -99,6 +106,7 @@ function initAppEvents() {
   $('#exportBtn').addEventListener('click', exportChat);
   $('#logoutBtn').addEventListener('click', logout);
   $('#resetUsageBtn').addEventListener('click', doResetUsage);
+  $('#syncNowBtn').addEventListener('click', () => runSyncSafe());
   sendBtn.addEventListener('click', send);
   stopBtn.addEventListener('click', stop);
 
@@ -294,19 +302,29 @@ function applyLayoutMode() {
   const btn = $('#layoutToggle');
   if (btn) {
     btn.hidden = false;
-    // Compact icon-only button that offers the *opposite* of what is currently shown.
+    // Compact icon-only button: auto mode can be overridden once; any forced
+    // mode returns to auto so PC/mobile follows the device again.
     btn.textContent = mobile ? '\uD83D\uDDA5\uFE0F' : '\uD83D\uDCF1';
-    btn.setAttribute('aria-label', mobile ? 'PC \uBCF4\uAE30\uB85C \uC804\uD658' : '\uBAA8\uBC14\uC77C \uBCF4\uAE30\uB85C \uC804\uD658');
-    btn.setAttribute('data-tip', mobile ? 'PC \uB808\uC774\uC544\uC6C3\uC73C\uB85C \uC804\uD658' : '\uBAA8\uBC14\uC77C \uB808\uC774\uC544\uC6C3\uC73C\uB85C \uC804\uD658');
+    if (layoutMode === 'auto') {
+      btn.setAttribute('aria-label', mobile ? 'PC 보기로 전환 (현재: 자동)' : '모바일 보기로 전환 (현재: 자동)');
+      btn.setAttribute('data-tip', mobile ? 'PC 레이아웃으로 전환 (현재: 자동)' : '모바일 레이아웃으로 전환 (현재: 자동)');
+    } else {
+      btn.setAttribute('aria-label', '자동 레이아웃으로 복귀');
+      btn.setAttribute('data-tip', '자동 레이아웃으로 복귀');
+    }
   }
 }
 function setupLayoutToggle() {
   const btn = $('#layoutToggle');
   btn.addEventListener('click', () => {
-    const mobileNow = document.body.classList.contains('is-mobile');
-    // Lock to the explicit opposite of the current rendering.
-    layoutMode = mobileNow ? 'desktop' : 'mobile';
-    localStorage.setItem(LAYOUT_KEY, layoutMode);
+    if (layoutMode === 'auto') {
+      const mobileNow = document.body.classList.contains('is-mobile');
+      layoutMode = mobileNow ? 'desktop' : 'mobile';
+    } else {
+      layoutMode = 'auto';
+    }
+    if (layoutMode === 'auto') localStorage.removeItem(LAYOUT_KEY);
+    else localStorage.setItem(LAYOUT_KEY, layoutMode);
     applyLayoutMode();
   });
   // Re-evaluate on rotate/resize (only matters while in `auto`).
@@ -402,6 +420,21 @@ function initAuth() {
     $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') submitAuth(); });
   }
 
+  // Online vs local login toggle (default online, persisted per device).
+  $('#authModeToggle').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-mode]');
+    if (!btn) return;
+    loginMode = btn.dataset.mode;
+    localStorage.setItem(LOGIN_MODE_KEY, loginMode);
+    applyLoginMode();
+  });
+  const ep = $('#syncEndpoint');
+  if (ep) {
+    ep.value = getEndpoint();
+    ep.addEventListener('change', () => setEndpoint(ep.value.trim()));
+  }
+  applyLoginMode();
+
   // Remember-ID prefill
   const lastUser = localStorage.getItem(REMEMBER_KEY);
   if (lastUser) {
@@ -423,6 +456,23 @@ function applyAuthMode() {
   $('#authToggle').textContent = signupMode ? '로그인' : '회원가입';
   $('#authPass').setAttribute('autocomplete', signupMode ? 'new-password' : 'current-password');
   showAuthError('');
+}
+
+// Reflect the online/local login mode in the auth UI.
+function applyLoginMode() {
+  const online = loginMode === 'online';
+  const onlineEl = document.querySelector('#authModeToggle [data-mode="online"]');
+  const localEl = document.querySelector('#authModeToggle [data-mode="local"]');
+  if (onlineEl) onlineEl.classList.toggle('active', online);
+  if (localEl) localEl.classList.toggle('active', !online);
+  const cfg = $('#syncConfig');
+  if (cfg) cfg.hidden = !online;
+  const sub = $('#authSub');
+  if (sub) {
+    sub.textContent = online
+      ? '여러 기기에서 안전하게 동기화됩니다. (영지식 암호화 · 서버엔 암호문만 저장)'
+      : '이 브라우저에만 암호화되어 저장됩니다. (동기화 안 함)';
+  }
 }
 
 function showAuthError(msg) {
@@ -451,12 +501,25 @@ async function submitAuth() {
   submitBtn.textContent = '처리 중…';
   try {
     let s;
-    if (authMode === 'signup') {
+    if (loginMode === 'online') {
+      if (!syncConfigured()) {
+        throw new Error('동기화 서버 주소가 설정되지 않았습니다. 로컬 모드로 전환하거나 서버 주소를 등록하세요.');
+      }
+      if (authMode === 'signup') {
+        const pass2 = $('#authPass2').value;
+        if (password !== pass2) throw new Error('비밀번호가 일치하지 않습니다.');
+        s = await onlineSignup(username, password);
+      } else {
+        s = await onlineLogin(username, password);
+      }
+    } else if (authMode === 'signup') {
       const pass2 = $('#authPass2').value;
       if (password !== pass2) throw new Error('비밀번호가 일치하지 않습니다.');
       s = await signup(username, password);
+      s.mode = 'local';
     } else {
       s = await login(username, password);
+      s.mode = 'local';
     }
     clearLoginFailures(username);
     // remember-ID
@@ -518,7 +581,25 @@ function formatWait(ms) {
 }
 
 async function onAuthed(s) {
+  // Partition local storage by mode so a local "kim" and an online "kim" never
+  // collide in IndexedDB / settings (their data keys differ).
+  if (s.mode === 'online') s.id = 'online:' + s.id;
   session = s;
+  setSyncEnabled(s.mode === 'online');
+
+  // header / sidebar identity (shown before the first sync so the app feels snappy)
+  $('#userName').textContent = s.displayName;
+  $('#userBadge').textContent = (s.displayName || '?').slice(0, 1);
+
+  // Online: pull remote state first so settings / chats are present on a new device.
+  if (s.mode === 'online' && s.token) {
+    setSyncStatus('syncing');
+    try { await runSync(session); setSyncStatus('synced'); }
+    catch (e) { setSyncStatus('error', e && e.message); }
+  } else if (s.mode === 'online' && s.offline) {
+    setSyncStatus('offline');
+  }
+
   settings = await loadSettingsFor(s);
 
   // clear sensitive inputs
@@ -526,14 +607,94 @@ async function onAuthed(s) {
   $('#authPass2').value = '';
   showAuthError('');
 
-  // header / sidebar identity
-  $('#userName').textContent = s.displayName;
-  $('#userBadge').textContent = (s.displayName || '?').slice(0, 1);
-
   $('#authScreen').hidden = true;
   $('#app').hidden = false;
+  $('#syncRow').hidden = (s.mode !== 'online');
 
   await bootAppData();
+  startSyncLoop();
+}
+
+// =====================================================================
+//  Background delta sync (online mode only)
+// =====================================================================
+const SYNC_INTERVAL_MS = 15000;
+let syncTimer = null;
+let syncDebounce = null;
+
+function isOnlineSession() {
+  return !!(session && session.mode === 'online' && session.token);
+}
+
+// Debounced trigger after a local change.
+function scheduleSync() {
+  if (!isOnlineSession()) return;
+  if (syncDebounce) clearTimeout(syncDebounce);
+  syncDebounce = setTimeout(() => { syncDebounce = null; runSyncSafe(); }, 1200);
+}
+
+async function runSyncSafe() {
+  if (!isOnlineSession()) return;
+  // Don't fight an in-flight model stream; retry on the next tick instead.
+  if (activeController) return;
+  setSyncStatus('syncing');
+  try {
+    const r = await runSync(session);
+    setSyncStatus('synced');
+    if (r && r.pulled) await refreshAfterSync();
+  } catch (e) {
+    setSyncStatus('error', e && e.message);
+  }
+}
+
+function startSyncLoop() {
+  stopSyncLoop();
+  if (!isOnlineSession()) return;
+  syncTimer = setInterval(runSyncSafe, SYNC_INTERVAL_MS);
+  document.addEventListener('visibilitychange', onVisibilitySync);
+  window.addEventListener('online', runSyncSafe);
+}
+function stopSyncLoop() {
+  if (syncTimer) clearInterval(syncTimer);
+  syncTimer = null;
+  if (syncDebounce) { clearTimeout(syncDebounce); syncDebounce = null; }
+  document.removeEventListener('visibilitychange', onVisibilitySync);
+  window.removeEventListener('online', runSyncSafe);
+}
+function onVisibilitySync() { if (!document.hidden) runSyncSafe(); }
+
+// Re-pull pulled changes into the live UI without disrupting an active edit.
+async function refreshAfterSync() {
+  if (!session) return;
+  try { settings = await loadSettingsFor(session); }
+  catch { /* keep current settings */ }
+  applyWebSearchButton();
+  renderChips();
+  renderUsage();
+  chats = await listChats(session.id, session.key);
+  renderChatList();
+  if (currentChat) {
+    if (chats.some((c) => c.id === currentChat.id)) {
+      turns = await listTurns(currentChat.id, session.key);
+      renderMessages();
+    } else {
+      currentChat = null; turns = []; chatTitleEl.textContent = ''; renderMessages();
+    }
+  }
+}
+
+function setSyncStatus(state, detail) {
+  const el = $('#syncStatus');
+  if (!el) return;
+  const map = {
+    syncing: '⟳ 동기화 중…',
+    synced: '✓ 동기화됨',
+    offline: '⚠ 오프라인 (로컬 사용 중)',
+    error: '⚠ 동기화 실패',
+  };
+  el.textContent = map[state] || '';
+  el.title = detail ? String(detail) : '';
+  el.dataset.state = state || '';
 }
 
 async function bootAppData() {
@@ -582,6 +743,9 @@ function stopIdleWatch() {
 function clearSessionState() {
   if (activeController) activeController.abort();
   stopIdleWatch();
+  stopSyncLoop();
+  setSyncEnabled(false);
+  setSyncStatus('');
   localStorage.removeItem(LEGACY_AUTOLOGIN_KEY);
   session = null;
   settings = defaultSettings();
@@ -598,6 +762,7 @@ function showAuthScreen() {
   $('#authScreen').hidden = false;
   authMode = 'login';
   applyAuthMode();
+  applyLoginMode();
   const lastUser = localStorage.getItem(REMEMBER_KEY);
   $('#authUser').value = lastUser || '';
   $('#authPass').value = '';
@@ -622,6 +787,14 @@ function forceLogout(message) {
 //  Encrypted settings persistence (per user)
 // =====================================================================
 async function loadSettingsFor(s) {
+  // Online: prefer the synced settings blob (kept in IndexedDB `meta`) so a new
+  // device picks up API keys / preferences right after the first pull.
+  if (s.mode === 'online') {
+    try {
+      const synced = await loadSyncSettings(s.id, s.key);
+      if (synced) return normalizeSettings(synced);
+    } catch { /* fall back to local cache */ }
+  }
   const raw = localStorage.getItem(SETTINGS_PREFIX + s.id);
   if (!raw) return defaultSettings();
   try {
@@ -640,7 +813,11 @@ function persistSettings() {
   settingsSaveChain = settingsSaveChain.then(async () => {
     const env = await encryptJSON(session.key, settings);
     localStorage.setItem(SETTINGS_PREFIX + session.id, JSON.stringify(env));
+    if (session.mode === 'online') {
+      await saveSyncSettings(session.id, session.key, settings);
+    }
   }).catch(() => {});
+  if (session.mode === 'online') scheduleSync();
   return settingsSaveChain;
 }
 
@@ -995,6 +1172,7 @@ async function openChat(id) {
 async function removeChat(id) {
   if (!confirm('이 채팅을 삭제할까요?')) return;
   await deleteChat(id);
+  scheduleSync();
   chats = chats.filter((c) => c.id !== id);
   if (currentChat && currentChat.id === id) {
     // The currently-open chat was deleted → return to an empty (no-chat) state.
@@ -1444,7 +1622,7 @@ async function send() {
     master: masterEnabled ? { status: 'pending', text: '' } : null,
   };
   turns.push(turn);
-  await addTurn(session.key, turn);
+  await addTurn(session.key, turn, session.id);
 
   promptInput.value = '';
   clearAttachments();
@@ -1464,9 +1642,10 @@ async function send() {
     await runMaster(turn, masterModel, active, signal);
   }
 
-  await updateTurn(session.key, turn);
+  await updateTurn(session.key, turn, session.id);
   setSending(false);
   activeController = null;
+  scheduleSync();
 }
 
 async function runModel(turn, model, signal) {
@@ -1612,7 +1791,7 @@ async function regenerate(turn, cardKey) {
         if (master) await runMaster(turn, master, turnModels(turn), signal);
       }
     }
-    await updateTurn(session.key, turn);
+    await updateTurn(session.key, turn, session.id);
   } finally {
     setSending(false);
     activeController = null;
@@ -1917,6 +2096,10 @@ function setupPwModal() {
   }
 }
 function openPwModal() {
+  if (session && session.mode === 'online') {
+    alert('온라인(동기화) 계정의 비밀번호 변경은 아직 지원하지 않습니다.\n비밀번호를 바꾸면 모든 기기의 암호화 키가 달라져 데이터를 다시 올려야 하기 때문입니다.');
+    return;
+  }
   $('#pwCurrent').value = '';
   $('#pwNew').value = '';
   $('#pwNew2').value = '';

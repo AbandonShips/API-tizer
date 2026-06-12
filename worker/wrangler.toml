@@ -1,0 +1,22 @@
+name = "api-tizer-sync"
+main = "index.js"
+compatibility_date = "2024-11-01"
+
+# --- D1 database binding ----------------------------------------------------
+# Create the DB once with:  wrangler d1 create api-tizer-sync
+# then paste the printed database_id below.
+[[d1_databases]]
+binding = "DB"
+database_name = "api-tizer-sync"
+database_id = "222c1411-3956-45ab-990e-2341810d0aaa"
+
+# --- Variables --------------------------------------------------------------
+# ALLOW_ORIGIN: restrict CORS to your app origin in production, e.g.
+#   "https://YOURNAME.github.io"  (comma-separated list allowed).
+# Keep "*" only while testing.
+[vars]
+ALLOW_ORIGIN = "https://abandonships.github.io,http://localhost:8753,http://127.0.0.1:8753"
+
+# AUTH_SECRET is a SECRET, not a plain var. Set it with:
+#   wrangler secret put AUTH_SECRET
+# (use a long random string, e.g. `openssl rand -base64 48`)

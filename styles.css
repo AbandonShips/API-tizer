@@ -592,3 +592,24 @@ body.is-mobile.is-narrow .card-stats { font-size: 9.5px; }
    ===================================================================== */
 body.force-desktop { overflow-x: auto; }
 body.force-desktop #app { min-width: 900px; }
+
+/* =====================================================================
+   Online sync: login-mode toggle, server config, sidebar status
+   ===================================================================== */
+.auth-mode { width: 100%; margin: 2px 0 8px; }
+.auth-mode .seg-btn { flex: 1; text-align: center; }
+
+.sync-config { width: 100%; margin: 0 0 8px; text-align: left; font-size: 12.5px; }
+.sync-config summary { cursor: pointer; color: var(--muted); margin-bottom: 6px; user-select: none; }
+.sync-config .auth-input { margin: 4px 0; }
+.sync-config code { background: var(--bg-3); padding: 1px 5px; border-radius: 5px; }
+
+.sync-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; margin: 2px 0 6px;
+}
+.sync-status { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.sync-status[data-state="synced"] { color: var(--ok); }
+.sync-status[data-state="error"],
+.sync-status[data-state="offline"] { color: var(--danger); }
+
