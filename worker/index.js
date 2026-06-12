@@ -15,8 +15,15 @@
  *   POST /api/auth/params   {username}                              -> {exists, kdf_salt, kdf_iterations}
  *   POST /api/auth/signup   {username, kdf_salt, kdf_iterations, auth_token} -> {token}
  *   POST /api/auth/login    {username, auth_token}                  -> {token}
+ *   POST /api/auth/change   {kdf_salt, kdf_iterations, auth_token}  (Bearer) -> {token, server_time}
  *   GET  /api/sync/pull?since=<ms>&limit=<n>   (Bearer)             -> {server_time, items, more}
  *   POST /api/sync/push     {items:[...]}      (Bearer)             -> {server_time, items}
+ *
+ * Changing the password rotates Key B (auth) and Key A (data), bumps the
+ * user's `auth_changed_at`, and wipes the server's items so the client can
+ * re-push everything re-encrypted under the new Key A. Any still-valid token
+ * issued before that moment is rejected (401), which forces other devices to
+ * log in again with the new password.
  *
  * Required binding:  DB    (D1 database)
  * Required secret:   AUTH_SECRET   (HMAC key for session tokens)
@@ -47,6 +54,7 @@ export default {
       if (request.method === 'POST' && path === '/api/auth/params') return await handleParams(request, env, cors);
       if (request.method === 'POST' && path === '/api/auth/signup') return await handleSignup(request, env, cors);
       if (request.method === 'POST' && path === '/api/auth/login') return await handleLogin(request, env, cors);
+      if (request.method === 'POST' && path === '/api/auth/change') return await handleChange(request, env, cors);
       if (request.method === 'GET' && path === '/api/sync/pull') return await handlePull(request, env, url, cors);
       if (request.method === 'POST' && path === '/api/sync/push') return await handlePush(request, env, cors);
 
@@ -113,6 +121,36 @@ async function handleLogin(request, env, cors) {
 
   const token = await signToken(id, env);
   return json({ token }, 200, cors);
+}
+
+// Rotate credentials for the logged-in user (online password change).
+// Requires a currently-valid Bearer token. Stamps `auth_changed_at` so every
+// token issued earlier (i.e. on other devices) is immediately invalidated, and
+// clears the user's items so the client can re-push them re-encrypted under the
+// freshly derived Key A. Returns a new token for THIS device.
+async function handleChange(request, env, cors) {
+  const user = await requireAuth(request, env);
+  if (!user) return json({ error: '인증이 필요합니다.' }, 401, cors);
+
+  const body = await readJson(request);
+  if (!body.kdf_salt || !body.kdf_iterations || !body.auth_token) {
+    return json({ error: '필수 항목이 누락되었습니다.' }, 400, cors);
+  }
+
+  const authSalt = randomB64(16);
+  const authHash = await hashAuthToken(body.auth_token, authSalt);
+  const now = Date.now();
+
+  await env.DB.prepare(
+    'UPDATE users SET kdf_salt = ?, kdf_iterations = ?, auth_salt = ?, auth_hash = ?, auth_changed_at = ? WHERE username = ?'
+  ).bind(String(body.kdf_salt), Number(body.kdf_iterations), authSalt, authHash, now, user).run();
+
+  // Clean overwrite: drop all old-Key-A ciphertext. The client re-pushes the
+  // full, re-encrypted dataset immediately after this call succeeds.
+  await env.DB.prepare('DELETE FROM items WHERE username = ?').bind(user).run();
+
+  const token = await signToken(user, env);
+  return json({ token, server_time: now }, 200, cors);
 }
 
 async function handlePull(request, env, url, cors) {
@@ -186,12 +224,21 @@ async function requireAuth(request, env) {
   const h = request.headers.get('Authorization') || '';
   const m = h.match(/^Bearer\s+(.+)$/i);
   if (!m) return null;
-  return verifyToken(m[1], env);
+  const data = await verifyToken(m[1], env);
+  if (!data) return null;
+  // Reject tokens minted before the user's last credential change so that a
+  // password change instantly logs out every other device (they get a 401).
+  const row = await env.DB.prepare('SELECT auth_changed_at FROM users WHERE username = ?').bind(data.u).first();
+  if (!row) return null;
+  if (Number(row.auth_changed_at || 0) > Number(data.iat || 0)) return null;
+  return data.u;
 }
 
-// Session token: base64url(payload).base64url(HMAC-SHA256(payload)). Stateless.
+// Session token: base64url(payload).base64url(HMAC-SHA256(payload)). Stateless,
+// but carries `iat` so a credential change can invalidate older tokens.
 async function signToken(username, env) {
-  const payload = b64urlEncode(enc.encode(JSON.stringify({ u: username, exp: Date.now() + TOKEN_TTL_MS })));
+  const now = Date.now();
+  const payload = b64urlEncode(enc.encode(JSON.stringify({ u: username, iat: now, exp: now + TOKEN_TTL_MS })));
   const sig = await hmac(payload, env);
   return `${payload}.${sig}`;
 }
@@ -205,7 +252,7 @@ async function verifyToken(token, env) {
   let data;
   try { data = JSON.parse(dec.decode(b64urlDecode(payload))); } catch { return null; }
   if (!data || !data.u || !data.exp || data.exp < Date.now()) return null;
-  return data.u;
+  return data; // { u, iat, exp }
 }
 
 async function hmac(message, env) {

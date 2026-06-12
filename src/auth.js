@@ -41,22 +41,8 @@ function passwordProblem(password) {
   return '';
 }
 
-export function hasAnyUser() {
-  return Object.keys(loadUsers()).length > 0;
-}
-
-export function userExists(username) {
-  return !!loadUsers()[normalizeId(username)];
-}
-
 export function getDisplayName(username) {
   return loadUsers()[normalizeId(username)]?.displayName || username;
-}
-
-export function listUsernames() {
-  return Object.values(loadUsers())
-    .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
-    .map((u) => u.displayName);
 }
 
 export async function signup(username, password, options = {}) {
@@ -249,8 +235,31 @@ async function offlineLogin(id, password, cache, options = {}) {
   };
 }
 
-// True if this device has previously logged this online account in (enables a
-// faster offline path / UI hints).
-export function hasOnlineCache(username) {
-  return !!loadOnlineCache(username);
+// Verify the current password against the live session's KDF params, then
+// derive a fresh Key A (data) + Key B (auth) under a brand-new salt for the new
+// password. The caller re-encrypts all local data with `newKey`, rotates the
+// server credentials with `newAuthToken`/`newKdfSalt`, then re-pushes.
+export async function onlineChangePassword({ currentPassword, newPassword, kdfSalt, iterations, currentAuthToken }) {
+  const weak = passwordProblem(newPassword);
+  if (weak) throw new Error(weak);
+
+  // Re-derive Key B from the current password and compare to the session's
+  // token — proves the user actually knows the current password.
+  const { authToken: curAuth } = await deriveSyncKeys(
+    currentPassword, fromB64(kdfSalt), iterations || PBKDF2_ITERATIONS
+  );
+  if (curAuth !== currentAuthToken) throw new Error('현재 비밀번호가 올바르지 않습니다.');
+
+  const newSalt = randomBytes(16);
+  const newIterations = PBKDF2_ITERATIONS;
+  const { encKey: newKey, authToken: newAuthToken } =
+    await deriveSyncKeys(newPassword, newSalt, newIterations);
+
+  return { newKey, newAuthToken, newKdfSalt: toB64(newSalt), iterations: newIterations };
+}
+
+// Refresh this device's offline-capable verifier after a password change so an
+// offline login keeps working with the new key.
+export async function refreshOnlineCache(username, displayName, encKey, kdfSalt, iterations) {
+  await cacheOnlineVerifier(username, displayName, encKey, kdfSalt, iterations);
 }

@@ -93,6 +93,18 @@ export async function serverLogin({ username, authToken }) {
   return api('/api/auth/login', { method: 'POST', body: { username, auth_token: authToken } });
 }
 
+// Rotate credentials (online password change). Authenticates with the current
+// bearer token, hands the server the NEW KDF params + Key B, and gets back a
+// fresh token for this device. The server also wipes the user's items so the
+// client must re-push the full dataset re-encrypted under the new Key A.
+export async function serverChangePassword({ token, kdfSalt, kdfIterations, authToken }) {
+  return api('/api/auth/change', {
+    method: 'POST',
+    token,
+    body: { kdf_salt: kdfSalt, kdf_iterations: kdfIterations, auth_token: authToken },
+  });
+}
+
 // --- Delta sync orchestration ----------------------------------------------
 let inFlight = null;
 
@@ -132,12 +144,4 @@ export async function runSync(session) {
   })();
   try { return await inFlight; }
   finally { inFlight = null; }
-}
-
-// Fire-and-forget sync that never rejects (for background triggers after edits).
-export function syncSoon(session) {
-  return runSync(session).catch((err) => {
-    console.warn('[sync] background sync failed:', err && err.message);
-    return null;
-  });
 }

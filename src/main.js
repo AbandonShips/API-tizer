@@ -7,17 +7,18 @@ import {
   createChat, listChats, updateChatMeta, deleteChat,
   addTurn, updateTurn, listTurns, clearUserData, estimateUsage,
   reencryptUserData, exportUserData, importUserData, uid,
-  setSyncEnabled, loadSyncSettings, saveSyncSettings,
+  setSyncEnabled, loadSyncSettings, saveSyncSettings, markAllDirty,
+  setLastSync,
 } from './db.js';
 import {
-  hasAnyUser, signup, login, deleteAccount, userExists,
+  signup, login, deleteAccount,
   preparePasswordChange, commitPasswordChange,
-  onlineSignup, onlineLogin,
+  onlineSignup, onlineLogin, onlineChangePassword, refreshOnlineCache,
 } from './auth.js';
 import {
   encryptJSON, decryptJSON, deriveKey, randomBytes, toB64, fromB64, PBKDF2_ITERATIONS,
 } from './crypto.js';
-import { runSync, isConfigured as syncConfigured, getEndpoint, setEndpoint, serverLogin } from './sync.js';
+import { runSync, isConfigured as syncConfigured, getEndpoint, setEndpoint, serverLogin, serverChangePassword } from './sync.js';
 import { streamChat, supportsWebSearch } from './providers.js';
 import { renderMarkdown } from './markdown.js';
 
@@ -713,6 +714,12 @@ async function onAuthed(s) {
   $('#authScreen').hidden = true;
   $('#app').hidden = false;
   $('#syncRow').hidden = (s.mode !== 'online');
+  const hint = document.querySelector('.sidebar-foot .hint');
+  if (hint) {
+    hint.textContent = s.mode === 'online'
+      ? '키·기록은 암호화되어 저장되고 서버에는 암호문만 동기화됩니다.'
+      : '키·기록은 이 브라우저에만 암호화 저장됩니다.';
+  }
 
   await bootAppData();
   startSyncLoop();
@@ -729,11 +736,12 @@ function isOnlineSession() {
   return !!(session && session.mode === 'online' && session.token);
 }
 
-// Debounced trigger after a local change.
+// Debounced trigger after a local change. Short delay = near write-through:
+// just enough to coalesce a burst of rapid edits into a single push.
 function scheduleSync() {
   if (!isOnlineSession()) return;
   if (syncDebounce) clearTimeout(syncDebounce);
-  syncDebounce = setTimeout(() => { syncDebounce = null; runSyncSafe(); }, 1200);
+  syncDebounce = setTimeout(() => { syncDebounce = null; runSyncSafe(); }, 300);
 }
 
 async function runSyncSafe() {
@@ -746,6 +754,14 @@ async function runSyncSafe() {
     setSyncStatus('synced');
     if (r && r.pulled) await refreshAfterSync();
   } catch (e) {
+    // Token rejected (e.g. another device changed the password): give up on
+    // merging and bounce this device to the login screen. Any unsent local
+    // (pending) edits are intentionally discarded per the sync design.
+    if (e && e.status === 401) {
+      clearAutoLoginSession();
+      forceLogout('비밀번호가 변경되어 자동 로그아웃되었습니다. 새 비밀번호로 다시 로그인해주세요.');
+      return;
+    }
     setSyncStatus('error', e && e.message);
   }
 }
@@ -1161,6 +1177,7 @@ function chatItem(c) {
 async function togglePin(c) {
   c.pinned = !c.pinned;
   await updateChatMeta(session.id, session.key, c);
+  scheduleSync();
   renderChatList();
 }
 
@@ -1176,6 +1193,7 @@ function assignFolder(c, item) {
       if (v !== (c.folder || '')) {
         c.folder = v;
         await updateChatMeta(session.id, session.key, c);
+        scheduleSync();
       }
     }
     renderChatList();
@@ -1200,6 +1218,7 @@ function beginRename(c, item) {
       if (v && v !== c.title) {
         c.title = v.slice(0, 80);
         await updateChatMeta(session.id, session.key, c);
+        scheduleSync();
         if (currentChat && currentChat.id === c.id) chatTitleEl.textContent = c.title;
       }
     }
@@ -1727,6 +1746,7 @@ async function send() {
   };
   turns.push(turn);
   await addTurn(session.key, turn, session.id);
+  scheduleSync();
 
   promptInput.value = '';
   clearAttachments();
@@ -2142,7 +2162,12 @@ async function resetEverything() {
   if (!ok) return;
 
   if (activeController) activeController.abort();
-  await clearUserData(session.id);
+  if (session.mode === 'online') {
+    const rows = await listChats(session.id, session.key);
+    for (const c of rows) await deleteChat(c.id);
+  } else {
+    await clearUserData(session.id);
+  }
   localStorage.removeItem(SETTINGS_PREFIX + session.id);
   settings = defaultSettings();
   await persistSettings();
@@ -2164,10 +2189,15 @@ async function resetEverything() {
   renderModelSettings();
   refreshStorageInfo();
   $('#saveHint').textContent = '초기화 완료 ✓';
+  if (session.mode === 'online') scheduleSync();
   setTimeout(closeSettings, 600);
 }
 
 async function deleteCurrentAccount() {
+  if (session && session.mode === 'online') {
+    alert('온라인 계정 삭제는 아직 서버 API가 없어 지원하지 않습니다.\n이 기기의 데이터만 지우려면 "내 데이터 초기화"를 사용하세요.');
+    return;
+  }
   const who = session ? `'${session.displayName}'` : '';
   const ok = confirm(
     `계정 ${who} 을(를) 완전히 삭제할까요?\n\n` +
@@ -2201,8 +2231,8 @@ function setupPwModal() {
   }
 }
 function openPwModal() {
-  if (session && session.mode === 'online') {
-    alert('온라인(동기화) 계정의 비밀번호 변경은 아직 지원하지 않습니다.\n비밀번호를 바꾸면 모든 기기의 암호화 키가 달라져 데이터를 다시 올려야 하기 때문입니다.');
+  if (session && session.mode === 'online' && !session.token) {
+    alert('오프라인 상태에서는 비밀번호를 변경할 수 없습니다.\n네트워크에 연결한 뒤 다시 시도해주세요.');
     return;
   }
   $('#pwCurrent').value = '';
@@ -2228,24 +2258,89 @@ async function submitPwChange() {
   const prev = btn.textContent;
   btn.textContent = '변경 중…';
   try {
-    const { oldKey, newKey, newSalt, iterations } =
-      await preparePasswordChange(session.id, cur, nw);
-    // re-encrypt all data, then settings, then commit verifier
-    await reencryptUserData(session.id, oldKey, newKey);
-    const env = await encryptJSON(newKey, settings);
-    localStorage.setItem(SETTINGS_PREFIX + session.id, JSON.stringify(env));
-    await commitPasswordChange(session.id, newKey, newSalt, iterations);
-    session.key = newKey;
+    if (session.mode === 'online') await changeOnlinePassword(cur, nw);
+    else await changeLocalPassword(cur, nw);
+    if (!session) return; // a forced logout happened mid-flow
     localStorage.removeItem(LEGACY_AUTOLOGIN_KEY);
     clearAutoLoginSession();
     closePwModal();
-    $('#saveHint').textContent = '비밀번호 변경 완료 ✓';
+    $('#saveHint').textContent = session.mode === 'online'
+      ? '비밀번호 변경 완료 ✓ (다른 기기는 새 비밀번호로 다시 로그인해야 합니다)'
+      : '비밀번호 변경 완료 ✓';
   } catch (err) {
     showPwError(String(err.message || err));
   } finally {
     btn.disabled = false;
     btn.textContent = prev;
   }
+}
+
+// Local-only account: re-encrypt this device's data and commit a new verifier.
+async function changeLocalPassword(cur, nw) {
+  const { oldKey, newKey, newSalt, iterations } =
+    await preparePasswordChange(session.id, cur, nw);
+  await reencryptUserData(session.id, oldKey, newKey);
+  const env = await encryptJSON(newKey, settings);
+  localStorage.setItem(SETTINGS_PREFIX + session.id, JSON.stringify(env));
+  await commitPasswordChange(session.id, newKey, newSalt, iterations);
+  session.key = newKey;
+}
+
+// Online (synced) account. Steps are ordered for safety:
+//   1) flush pending + pull so THIS device holds the full, current dataset
+//   2) verify the current password and derive the new Key A / Key B
+//   3) re-encrypt every local record + settings under the new Key A
+//   4) rotate server credentials (this invalidates other devices' tokens and
+//      wipes server items) and adopt the fresh token returned for this device
+//   5) re-push the whole re-encrypted dataset to overwrite the server
+async function changeOnlinePassword(cur, nw) {
+  if (!isOnlineSession()) {
+    throw new Error('오프라인 상태에서는 비밀번호를 변경할 수 없습니다. 네트워크 연결 후 다시 시도해주세요.');
+  }
+
+  // 1) ensure nothing is left unsent and we have everything locally
+  try {
+    await runSync(session);
+  } catch (e) {
+    if (e && e.status === 401) { clearAutoLoginSession(); forceLogout('세션이 만료되었습니다. 다시 로그인해주세요.'); return; }
+    throw new Error('동기화에 실패해 비밀번호를 바꾸지 못했습니다. 네트워크를 확인하고 다시 시도해주세요.');
+  }
+
+  // 2) verify current password + derive the new keys
+  const realId = session.id.replace(/^online:/, '');
+  const oldKey = session.key;
+  const { newKey, newAuthToken, newKdfSalt, iterations } = await onlineChangePassword({
+    currentPassword: cur,
+    newPassword: nw,
+    kdfSalt: session.kdfSalt,
+    iterations: session.iterations,
+    currentAuthToken: session.authToken,
+  });
+
+  // 3) re-encrypt all local data + settings under the new Key A
+  await reencryptUserData(session.id, oldKey, newKey);
+  const env = await encryptJSON(newKey, settings);
+  localStorage.setItem(SETTINGS_PREFIX + session.id, JSON.stringify(env));
+  await saveSyncSettings(session.id, newKey, settings);
+
+  // 4) rotate server credentials -> fresh token for this device
+  const { token: newToken } = await serverChangePassword({
+    token: session.token,
+    kdfSalt: newKdfSalt,
+    kdfIterations: iterations,
+    authToken: newAuthToken,
+  });
+  session.key = newKey;
+  session.authToken = newAuthToken;
+  session.kdfSalt = newKdfSalt;
+  session.iterations = iterations;
+  session.token = newToken;
+  await refreshOnlineCache(realId, session.displayName, newKey, newKdfSalt, iterations);
+
+  // 5) re-push the entire re-encrypted dataset to overwrite the server
+  await markAllDirty(session.id);
+  await setLastSync(session.id, 0);
+  await runSync(session);
 }
 
 // =====================================================================
@@ -2397,6 +2492,7 @@ async function importBackup(e) {
     renderChatList();
     renderModelSettings();
     $('#customPrompt').value = settings.customPrompt;
+    if (session.mode === 'online' && (n || settingsRestored)) scheduleSync();
     const parts = [];
     if (n) parts.push(`채팅 ${n}개`);
     if (settingsRestored) parts.push('설정·API 키');

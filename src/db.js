@@ -481,7 +481,8 @@ export async function applyRemoteItems(user, items) {
 }
 
 // Flag all of a user's existing local data for upload (used the first time a
-// previously local-only account is linked to the sync server).
+// previously local-only account is linked to the sync server, and after an
+// online password change re-encrypts all ciphertext under a new Key A).
 export async function markAllDirty(user) {
   const chatRows = await reqToPromise((await tx('chats', 'readonly')).index('user').getAll(IDBKeyRange.only(user)));
   for (const r of chatRows) {
@@ -492,5 +493,11 @@ export async function markAllDirty(user) {
   for (const r of turnRows) {
     r.dirty = 1; if (r.updatedAt == null) r.updatedAt = r.createdAt || Date.now();
     await reqToPromise((await tx('turns', 'readwrite')).put(r));
+  }
+  const settingsRow = await reqToPromise((await tx('meta', 'readonly')).get(META_SETTINGS(user)));
+  if (settingsRow) {
+    settingsRow.dirty = 1;
+    if (settingsRow.updatedAt == null) settingsRow.updatedAt = settingsRow.createdAt || Date.now();
+    await reqToPromise((await tx('meta', 'readwrite')).put(settingsRow));
   }
 }

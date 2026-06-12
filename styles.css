@@ -676,7 +676,7 @@ body.force-desktop #app { min-width: 900px; }
   display: flex; align-items: center; justify-content: space-between;
   gap: 8px; margin: 2px 0 6px;
 }
-.sync-status { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.sync-status { font-size: 12px; color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .sync-status[data-state="synced"] { color: var(--ok); }
 .sync-status[data-state="error"],
 .sync-status[data-state="offline"] { color: var(--danger); }

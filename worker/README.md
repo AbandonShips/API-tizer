@@ -27,6 +27,12 @@
    ```bash
    wrangler d1 execute api-tizer-sync --remote --file=./schema.sql
    ```
+   > 이미 운영 중인 DB를 v1.2로 올리는 경우에는 온라인 비밀번호 변경을 위해
+   > `auth_changed_at` 컬럼을 한 번만 추가해야 합니다.
+   > ```bash
+   > wrangler d1 execute api-tizer-sync --remote --file=./migrations/0001_add_auth_changed_at.sql
+   > ```
+   > 새 DB에 `schema.sql`을 처음 적용하는 경우에는 별도 마이그레이션이 필요 없습니다.
 
 3. **세션 토큰 서명용 비밀키 등록** (길고 무작위한 문자열)
    ```bash
@@ -73,6 +79,7 @@ wrangler dev --remote
 | POST | `/api/auth/params` | 로그인 전 KDF 파라미터(salt, iterations) 조회 |
 | POST | `/api/auth/signup` | 계정 생성 (Key B 의 해시만 저장) |
 | POST | `/api/auth/login` | Key B 로 인증 → 세션 토큰 발급 |
+| POST | `/api/auth/change` | (인증 필요) 비밀번호 변경 — Key A/Key B 재발급, 서버 데이터 초기화, 이전 토큰 무효화 |
 | GET | `/api/sync/pull?since=<ms>` | 마지막 동기화 이후 변경분만 내려받기 |
 | POST | `/api/sync/push` | 로컬 변경분 업로드 (서버 시간 기준 last-write-wins) |
 
@@ -81,3 +88,4 @@ wrangler dev --remote
 - 서버는 `auth_token`(Key B)을 **PBKDF2 해시**로만 저장합니다. DB 가 유출돼도 비밀번호·Key A 를 알 수 없습니다.
 - 충돌 해결은 "서버에 마지막으로 도달한 쓰기가 승리(서버 시계 기준)" 방식입니다. 개인용 다중 기기 사용에 적합합니다.
 - 삭제는 tombstone(삭제 표시)으로 전파된 뒤 클라이언트에서 정리됩니다.
+- 비밀번호를 바꾸면 `auth_changed_at` 이 갱신되어 **그 전에 발급된 모든 토큰이 401로 거부**됩니다. 다른 기기는 다음 동기화 시도 시 강제 로그아웃되며, 아직 올리지 않은 변경분은 소실될 수 있습니다(설계상 허용).

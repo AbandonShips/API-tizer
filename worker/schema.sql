@@ -3,12 +3,13 @@
 -- sees the data key (Key A) and therefore cannot read any user content.
 
 CREATE TABLE IF NOT EXISTS users (
-  username        TEXT    PRIMARY KEY,   -- normalised (lowercase) id
-  kdf_salt        TEXT    NOT NULL,      -- base64 PBKDF2 salt (NOT secret)
-  kdf_iterations  INTEGER NOT NULL,      -- PBKDF2 iteration count
-  auth_salt       TEXT    NOT NULL,      -- base64 salt for the server-side auth hash
-  auth_hash       TEXT    NOT NULL,      -- base64 PBKDF2 hash of Key B (auth token)
-  created_at      INTEGER NOT NULL
+  username         TEXT    PRIMARY KEY,   -- normalised (lowercase) id
+  kdf_salt         TEXT    NOT NULL,      -- base64 PBKDF2 salt (NOT secret)
+  kdf_iterations   INTEGER NOT NULL,      -- PBKDF2 iteration count
+  auth_salt        TEXT    NOT NULL,      -- base64 salt for the server-side auth hash
+  auth_hash        TEXT    NOT NULL,      -- base64 PBKDF2 hash of Key B (auth token)
+  created_at       INTEGER NOT NULL,
+  auth_changed_at  INTEGER NOT NULL DEFAULT 0  -- ms of last credential change; tokens issued before this are rejected
 );
 
 -- One row per syncable record (chat / turn / settings). `iv`+`ct` hold the
