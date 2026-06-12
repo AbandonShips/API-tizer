@@ -185,6 +185,49 @@ export async function deleteChat(chatId) {
   for (const k of keys) store.delete(k);
 }
 
+export async function deleteAllChats(user) {
+  const userChats = await reqToPromise(
+    (await tx('chats', 'readonly')).index('user').getAll(IDBKeyRange.only(user))
+  );
+
+  if (syncEnabled) {
+    const now = Date.now();
+    for (const c of userChats) {
+      c.deleted = 1;
+      c.dirty = 1;
+      c.updatedAt = now;
+      await reqToPromise((await tx('chats', 'readwrite')).put(c));
+    }
+    const turnRows = await reqToPromise(
+      (await tx('turns', 'readonly')).index('user').getAll(IDBKeyRange.only(user))
+    );
+    for (const t of turnRows) {
+      t.deleted = 1;
+      t.dirty = 1;
+      t.updatedAt = now;
+      await reqToPromise((await tx('turns', 'readwrite')).put(t));
+    }
+    return userChats.length;
+  }
+
+  const db = await openDB();
+  await new Promise((res, rej) => {
+    const t = db.transaction(['chats', 'turns'], 'readwrite');
+    const chats = t.objectStore('chats');
+    const turns = t.objectStore('turns');
+    const turnIdx = turns.index('user');
+    for (const c of userChats) chats.delete(c.id);
+    const cursorReq = turnIdx.openKeyCursor(IDBKeyRange.only(user));
+    cursorReq.onsuccess = (e) => {
+      const cur = e.target.result;
+      if (cur) { turns.delete(cur.primaryKey); cur.continue(); }
+    };
+    t.oncomplete = () => res();
+    t.onerror = () => rej(t.error);
+  });
+  return userChats.length;
+}
+
 // ---- Turns ----
 function splitTurn(turn) {
   const { id, chatId, createdAt, ...payload } = turn;

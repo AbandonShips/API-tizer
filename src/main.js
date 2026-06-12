@@ -5,7 +5,7 @@ import {
 } from './state.js';
 import {
   createChat, listChats, updateChatMeta, deleteChat,
-  addTurn, updateTurn, listTurns, clearUserData, estimateUsage,
+  addTurn, updateTurn, listTurns, clearUserData, deleteAllChats, estimateUsage,
   reencryptUserData, exportUserData, importUserData, uid,
   setSyncEnabled, loadSyncSettings, saveSyncSettings, markAllDirty,
   setLastSync,
@@ -92,11 +92,13 @@ const NARROW_BREAKPOINT = 480;
 let layoutMode = localStorage.getItem(LAYOUT_KEY) || 'auto';
 const THEME_KEY = 'apitizer.theme'; // 'dark' | 'light' (device-level)
 let theme = localStorage.getItem(THEME_KEY) || 'dark';
+let swipeStart = null;
 
 // =====================================================================
 //  Boot
 // =====================================================================
 initAppEvents();
+setupViewportHeight();
 setupSettingsModal();
 setupTooltips();
 setupLayoutToggle();
@@ -118,11 +120,6 @@ function initAppEvents() {
   $('#menuBtn').addEventListener('click', toggleDrawer);
   $('#sidebarBackdrop').addEventListener('click', closeDrawer);
 
-  $('#expandBtn').addEventListener('click', () => {
-    composerEl.classList.toggle('expanded');
-    promptInput.focus();
-  });
-
   webSearchBtn.addEventListener('click', () => {
     settings.webSearchEnabled = !settings.webSearchEnabled;
     applyWebSearchButton();
@@ -132,7 +129,7 @@ function initAppEvents() {
   chatSearchEl.addEventListener('input', onChatSearchInput);
 
   promptInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+    if (e.key === 'Enter' && !e.shiftKey && !isMobileLayout()) { e.preventDefault(); send(); }
   });
   promptInput.addEventListener('input', autoGrow);
 
@@ -199,6 +196,21 @@ function initAppEvents() {
 
   // Global keyboard shortcuts
   document.addEventListener('keydown', onGlobalKeydown);
+  setupDrawerGestures();
+  window.addEventListener('popstate', onAppBack);
+}
+
+function setupViewportHeight() {
+  const update = () => {
+    const vv = window.visualViewport;
+    const height = vv?.height || window.innerHeight;
+    document.documentElement.style.setProperty('--app-height', `${height}px`);
+    document.documentElement.style.setProperty('--vv-offset-top', `${vv?.offsetTop || 0}px`);
+  };
+  update();
+  window.addEventListener('resize', update, { passive: true });
+  window.visualViewport?.addEventListener('resize', update, { passive: true });
+  window.visualViewport?.addEventListener('scroll', update, { passive: true });
 }
 
 function onGlobalKeydown(e) {
@@ -221,12 +233,19 @@ function onGlobalKeydown(e) {
     else if (!$('#pwModal').hidden) closePwModal();
     else if (!settingsModal.hidden) closeSettings();
     else if (document.getElementById('app').classList.contains('drawer-open')) closeDrawer();
-    else if (composerEl.classList.contains('expanded')) composerEl.classList.remove('expanded');
   }
 }
 
 function openHelp() { $('#helpModal').hidden = false; }
 function closeHelp() { $('#helpModal').hidden = true; }
+
+function isMobileLayout() { return document.body.classList.contains('is-mobile'); }
+
+function updatePromptPlaceholder() {
+  const key = isMobileLayout() ? 'placeholderMobile' : 'placeholderDesktop';
+  promptInput.placeholder = promptInput.dataset[key] || promptInput.placeholder;
+  autoGrow();
+}
 
 // ---- Prompt library ----
 function openPromptModal() {
@@ -295,6 +314,58 @@ async function deletePrompt(id) {
 // ---- Mobile sidebar drawer ----
 function toggleDrawer() { document.getElementById('app').classList.toggle('drawer-open'); }
 function closeDrawer() { document.getElementById('app').classList.remove('drawer-open'); }
+function openDrawer() { document.getElementById('app').classList.add('drawer-open'); }
+
+function setupDrawerGestures() {
+  const app = document.getElementById('app');
+  const start = (e) => {
+    if (!isMobileLayout() || settingsModal.hidden === false || !$('#helpModal').hidden || !$('#promptModal').hidden) return;
+    const t = e.touches?.[0];
+    if (!t) return;
+    swipeStart = { x: t.clientX, y: t.clientY, at: Date.now(), drawerOpen: app.classList.contains('drawer-open') };
+  };
+  const move = (e) => {
+    if (!swipeStart || !isMobileLayout()) return;
+    const t = e.touches?.[0];
+    if (!t) return;
+    const dx = t.clientX - swipeStart.x;
+    const dy = t.clientY - swipeStart.y;
+    if (Math.abs(dy) > 80 || Math.abs(dx) < 70) return;
+    if (!swipeStart.drawerOpen && dx > 0 && swipeStart.x < window.innerWidth * 0.68) {
+      openDrawer();
+      swipeStart = null;
+    } else if (swipeStart.drawerOpen && dx < 0) {
+      closeDrawer();
+      swipeStart = null;
+    }
+  };
+  const end = () => { swipeStart = null; };
+  app.addEventListener('touchstart', start, { passive: true });
+  app.addEventListener('touchmove', move, { passive: true });
+  app.addEventListener('touchend', end, { passive: true });
+  app.addEventListener('touchcancel', end, { passive: true });
+}
+
+function ensureAppHistoryState(screen = 'empty') {
+  if (!history.state || !history.state.apitizer) {
+    history.replaceState({ apitizer: true, screen }, '');
+  }
+}
+
+function pushAppHistoryState(screen, chatId = null) {
+  if (!isMobileLayout()) return;
+  ensureAppHistoryState('empty');
+  history.pushState({ apitizer: true, screen, chatId }, '');
+}
+
+function onAppBack() {
+  if (!session || !isMobileLayout()) return;
+  if (document.getElementById('app').classList.contains('drawer-open')) { closeDrawer(); return; }
+  if (currentChat) {
+    newChat({ skipHistory: true, focus: false });
+    history.pushState({ apitizer: true, screen: 'empty' }, '');
+  }
+}
 
 // ---- PC ⇄ Mobile layout switch ----
 // `auto`  : follow viewport width (≤820px = mobile)
@@ -309,6 +380,8 @@ function applyLayoutMode() {
   // let the page scroll horizontally instead of crushing the content column.
   document.body.classList.toggle('force-desktop', layoutMode === 'desktop' && window.innerWidth <= MOBILE_BREAKPOINT);
   if (!mobile) closeDrawer(); // a stuck-open drawer would hide content in desktop mode
+  updatePromptPlaceholder();
+  renderUsage();
   const btn = $('#layoutToggle');
   if (btn) {
     btn.hidden = false;
@@ -719,6 +792,7 @@ async function onAuthed(s) {
 
   $('#authScreen').hidden = true;
   $('#app').hidden = false;
+  ensureAppHistoryState('empty');
   $('#syncRow').hidden = (s.mode !== 'online');
   const hint = document.querySelector('.sidebar-foot .hint');
   if (hint) {
@@ -948,8 +1022,9 @@ function persistSettings() {
 }
 
 function autoGrow() {
+  const minHeight = parseFloat(getComputedStyle(promptInput).minHeight) || 0;
   promptInput.style.height = 'auto';
-  promptInput.style.height = Math.min(promptInput.scrollHeight, 200) + 'px';
+  promptInput.style.height = Math.max(minHeight, Math.min(promptInput.scrollHeight, 200)) + 'px';
 }
 
 // =====================================================================
@@ -1277,7 +1352,7 @@ async function runContentSearch() {
   renderChatList();
 }
 
-async function newChat() {
+async function newChat(options = {}) {
   // A fresh room forgets prior context → saves tokens.
   currentChat = null;
   turns = [];
@@ -1288,7 +1363,8 @@ async function newChat() {
   persistSettings();
   renderChatList();
   renderMessages();
-  promptInput.focus();
+  if (!options.skipHistory) pushAppHistoryState('empty');
+  if (options.focus !== false) promptInput.focus();
 }
 
 async function openChat(id) {
@@ -1298,6 +1374,7 @@ async function openChat(id) {
   chatTitleEl.textContent = currentChat.title;
   renderChatList();
   renderMessages();
+  pushAppHistoryState('chat', id);
   closeDrawer();
 }
 
@@ -1384,6 +1461,18 @@ function renderUsage() {
 
   const list = $('#usageList');
   list.innerHTML = '';
+  const mobile = isMobileLayout();
+  if (mobile) {
+    panel.classList.add('usage-collapsible');
+    if (!panel.dataset.boundToggle) {
+      panel.dataset.boundToggle = '1';
+      panel.querySelector('.usage-head')?.addEventListener('click', () => {
+        panel.classList.toggle('open');
+      });
+    }
+  } else {
+    panel.classList.remove('usage-collapsible', 'open');
+  }
   for (const m of enabledCloud) {
     const cost = perModel[m.id]?.cost || 0;
     list.appendChild(h('div', { class: 'usage-row' }, [
@@ -1500,6 +1589,11 @@ function refreshCard(turn, key, resp) {
   }
 }
 
+function refreshMasterProgress(turn) {
+  if (!turn.master || (turn.master.status !== 'pending' && turn.master.status !== 'collecting')) return;
+  refreshCard(turn, 'master', turn.master);
+}
+
 async function copyResp(turn, key, btn) {
   const resp = key === 'master' ? turn.master : turn.responses[key];
   await copyText(resp?.text || '', btn);
@@ -1523,7 +1617,6 @@ function editQuestion(turn) {
   autoGrow();
   promptInput.focus();
   promptInput.setSelectionRange(promptInput.value.length, promptInput.value.length);
-  if (composerEl.classList.contains('expanded')) { /* keep */ }
   promptInput.scrollIntoView({ block: 'nearest' });
 }
 
@@ -1538,12 +1631,18 @@ async function resendQuestion(turn) {
 function applyRespToBody(body, resp, turn, key) {
   body.classList.remove('streaming');
   if (!resp || resp.status === 'pending') {
-    body.innerHTML = '<span class="card-status status-wait">대기 중…</span>';
+    const text = key === 'master' ? masterProgressText(turn) : '서버 응답 대기 중…';
+    body.innerHTML = `<span class="card-status status-wait">${escapeText(text)}</span>`;
     return;
   }
   if (resp.status === 'streaming') {
     body.classList.add('streaming');
-    body.innerHTML = renderMarkdown(resp.text || '');
+    if (key === 'master' && !resp.text) {
+      body.classList.remove('streaming');
+      body.innerHTML = '<span class="card-status status-wait">마스터가 전체 내용 취합 중…</span>';
+    } else {
+      body.innerHTML = renderMarkdown(resp.text || '');
+    }
     return;
   }
   if (resp.status === 'error') {
@@ -1557,6 +1656,22 @@ function applyRespToBody(body, resp, turn, key) {
     linkifyRefs(body, resp.citations);
     renderCitations(body, resp.citations);
   }
+}
+
+function modelProgressLabel(resp) {
+  if (!resp || resp.status === 'pending') return '서버 응답 대기 중';
+  if (resp.status === 'streaming') return '응답 중';
+  if (resp.status === 'done') return '응답 완료';
+  if (resp.status === 'error') return resp.error === '중단됨' ? '응답 중단됨' : '오류';
+  return '대기 중';
+}
+
+function masterProgressText(turn) {
+  if (!turn?.master) return '대기 중…';
+  if (turn.master.status === 'collecting') return '마스터가 전체 답변 취합 중…';
+  const models = turnModels(turn);
+  if (!models.length) return '서브 에이전트 응답 대기 중…';
+  return models.map((m) => `${m.label} - ${modelProgressLabel(turn.responses?.[m.id])}`).join('\n');
 }
 
 // ---- Citations ----
@@ -1785,7 +1900,6 @@ async function send() {
   promptInput.value = '';
   clearAttachments();
   autoGrow();
-  composerEl.classList.remove('expanded');
   renderMessages();
   setSending(true);
 
@@ -1798,6 +1912,10 @@ async function send() {
   // Master aggregation after all answers
   if (masterEnabled && !signal.aborted) {
     await runMaster(turn, masterModel, active, signal);
+  } else if (masterEnabled && signal.aborted && turn.master?.status === 'pending') {
+    turn.master.status = 'error';
+    turn.master.error = '중단됨';
+    refreshCard(turn, 'master', turn.master);
   }
 
   await updateTurn(session.key, turn, session.id);
@@ -1815,6 +1933,7 @@ async function runModel(turn, model, signal) {
     resp.text = '';
     resp.elapsedMs = undefined;
     refreshCard(turn, model.id, resp);
+    refreshMasterProgress(turn);
     return;
   }
 
@@ -1825,6 +1944,7 @@ async function runModel(turn, model, signal) {
   resp.citations = undefined;
   const startedAt = performance.now();
   refreshCard(turn, model.id, resp);
+  refreshMasterProgress(turn);
 
   try {
     const messages = buildHistory(model, turn);
@@ -1840,6 +1960,7 @@ async function runModel(turn, model, signal) {
         resp.text = fullText;
         const b = document.getElementById(`body-${turn.id}-${model.id}`);
         if (b) { b.classList.add('streaming'); b.innerHTML = renderMarkdown(fullText); }
+        refreshMasterProgress(turn);
       },
     });
     resp.text = full;
@@ -1857,6 +1978,7 @@ async function runModel(turn, model, signal) {
     renderUsage();
   }
   refreshCard(turn, model.id, resp);
+  refreshMasterProgress(turn);
 }
 
 async function runMaster(turn, master, active, signal) {
@@ -1866,6 +1988,11 @@ async function runMaster(turn, master, active, signal) {
     refreshCard(turn, 'master', turn.master);
     return;
   }
+  turn.master.status = 'collecting';
+  turn.master.text = '';
+  turn.master.error = undefined;
+  turn.master.elapsedMs = undefined;
+  refreshCard(turn, 'master', turn.master);
   turn.master.status = 'streaming';
   turn.master.text = '';
   turn.master.error = undefined;
@@ -2012,6 +2139,7 @@ function setupSettingsModal() {
     el.addEventListener('click', closeSettings));
   $('#addLocalBtn').addEventListener('click', addLocalRow);
   $('#saveSettingsBtn').addEventListener('click', saveSettingsFromForm);
+  $('#resetChatsBtn').addEventListener('click', resetChatsOnly);
   $('#resetAllBtn').addEventListener('click', resetEverything);
   $('#deleteAccountBtn').addEventListener('click', deleteCurrentAccount);
   $('#changePwBtn').addEventListener('click', openPwModal);
@@ -2225,6 +2353,29 @@ async function resetEverything() {
   $('#saveHint').textContent = '초기화 완료 ✓';
   if (session.mode === 'online') scheduleSync();
   setTimeout(closeSettings, 600);
+}
+
+async function resetChatsOnly() {
+  const who = session ? `'${session.displayName}'` : '현재 사용자';
+  const ok = confirm(
+    `${who}의 대화내용만 모두 삭제할까요?\n\n` +
+    '· 채팅방과 질문/답변 기록 삭제\n' +
+    '· API 키, 모델 설정, 개인 맞춤, 사용량은 유지\n\n' +
+    '되돌릴 수 없습니다.'
+  );
+  if (!ok) return;
+
+  if (activeController) activeController.abort();
+  await deleteAllChats(session.id);
+  chats = [];
+  currentChat = null;
+  turns = [];
+  chatTitleEl.textContent = '';
+  renderChatList();
+  renderMessages();
+  refreshStorageInfo();
+  $('#saveHint').textContent = '대화내용 초기화 완료 ✓';
+  if (session.mode === 'online') scheduleSync();
 }
 
 async function deleteCurrentAccount() {

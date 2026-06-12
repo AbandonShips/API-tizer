@@ -36,7 +36,7 @@ body.theme-light {
 }
 
 * { box-sizing: border-box; }
-html, body { height: 100%; margin: 0; }
+html, body { height: 100%; margin: 0; overflow: hidden; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo",
     "Malgun Gothic", Roboto, sans-serif;
@@ -46,7 +46,7 @@ body {
   line-height: 1.55;
 }
 
-#app { display: grid; grid-template-columns: 264px 1fr; height: 100vh; }
+#app { display: grid; grid-template-columns: 264px 1fr; height: 100dvh; height: var(--app-height, 100dvh); width: 100%; overflow: hidden; }
 #app[hidden] { display: none; }
 
 /* ---------- Auth screen ---------- */
@@ -130,7 +130,7 @@ body.theme-light button.brand:hover span { color: var(--accent); }
   border-radius: 6px; padding: 4px 7px; font-family: inherit; font-size: 13px; outline: none; min-width: 0;
 }
 .chat-search-empty { color: var(--muted); font-size: 12px; padding: 8px 10px; }
-.sidebar-foot { padding: 12px; border-top: 1px solid var(--border); }
+.sidebar-foot { padding: 12px; padding-bottom: max(12px, env(safe-area-inset-bottom)); border-top: 1px solid var(--border); }
 .hint { color: var(--muted); font-size: 11px; margin: 8px 2px 0; }
 
 /* monthly usage estimate panel (sidebar) */
@@ -140,10 +140,15 @@ body.theme-light button.brand:hover span { color: var(--accent); }
 }
 .usage-panel[hidden] { display: none; }
 .usage-head { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
+.usage-collapsible .usage-head { cursor: pointer; }
 .usage-title { font-size: 10.5px; color: var(--muted); }
 .usage-q { width: 13px; height: 13px; font-size: 8px; margin-left: 2px; }
 .usage-total { font-size: 14px; font-weight: 700; color: var(--ok); }
 .usage-list { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
+.usage-collapsible .usage-list,
+.usage-collapsible .usage-reset { display: none; }
+.usage-collapsible.open .usage-list { display: flex; }
+.usage-collapsible.open .usage-reset { display: block; }
 .usage-row { display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: var(--muted); }
 .usage-row .um-name { display: inline-flex; align-items: center; gap: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .usage-row .um-dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
@@ -247,7 +252,7 @@ body.theme-light button.brand:hover span { color: var(--accent); }
 .card-body { padding: 12px 14px; overflow-x: auto; }
 .card-body.streaming::after { content: "▋"; animation: blink 1s steps(2) infinite; color: var(--accent); }
 @keyframes blink { 50% { opacity: 0; } }
-.card-status { font-size: 11px; padding: 2px 8px; border-radius: 999px; }
+.card-status { font-size: 11px; padding: 2px 8px; border-radius: 999px; white-space: pre-line; line-height: 1.7; }
 .status-wait { color: var(--muted); }
 .status-err { color: var(--danger); }
 
@@ -260,7 +265,7 @@ body.theme-light button.brand:hover span { color: var(--accent); }
 .unified-inner { padding: 8px; display: flex; flex-direction: column; gap: 10px; }
 
 /* ---------- Composer ---------- */
-#composer { border-top: 1px solid var(--border); padding: 12px 18px 14px; background: var(--bg-2); }
+#composer { border-top: 1px solid var(--border); padding: 12px 18px max(14px, env(safe-area-inset-bottom)); background: var(--bg-2); }
 #composer.drag-over { outline: 2px dashed var(--accent); outline-offset: -6px; border-radius: 12px; }
 .composer-inner { display: flex; gap: 10px; align-items: flex-end; }
 .composer-tools { display: flex; gap: 10px; align-items: flex-end; flex: 0 0 auto; }
@@ -294,17 +299,10 @@ body.theme-light button.brand:hover span { color: var(--accent); }
 #promptInput {
   flex: 1; resize: none; max-height: 200px; background: var(--bg-3); color: var(--text);
   border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; font-family: inherit;
-  font-size: 14px; line-height: 1.5; outline: none;
+  font-size: 14px; line-height: 1.5; outline: none; min-height: 58px; overflow-y: hidden;
 }
 #promptInput:focus { border-color: var(--accent); }
 .send { height: 52px; min-width: 92px; padding: 0 26px; font-size: 15.5px; font-weight: 700; white-space: nowrap; }
-
-/* expanded composer (fullscreen-ish input) */
-#composer.expanded { position: absolute; left: 0; right: 0; bottom: 0; top: 60px; z-index: 30; display: flex; flex-direction: column; }
-#composer.expanded .composer-inner { flex: 1; align-items: stretch; }
-#composer.expanded #promptInput { max-height: none; height: 100%; align-self: stretch; }
-#composer.expanded .composer-tools, #composer.expanded .icon-attach, #composer.expanded .send { align-self: flex-end; }
-#composer.expanded #expandBtn { background: var(--accent); color: #fff; border-color: var(--accent); }
 
 /* attachment preview (composer) */
 .attach-preview { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
@@ -561,12 +559,12 @@ body.is-mobile #app { grid-template-columns: 1fr; }
 
 /* sidebar becomes an off-canvas drawer */
 body.is-mobile #sidebar {
-  position: fixed; top: 0; left: 0; bottom: 0; width: 80vw; max-width: 320px;
+  position: fixed; top: 0; left: 0; bottom: 0; height: var(--app-height, 100dvh); width: 80vw; max-width: 320px;
   z-index: 45; transform: translateX(-100%); transition: transform 0.22s ease;
 }
 body.is-mobile #app.drawer-open #sidebar { transform: translateX(0); }
 body.is-mobile #sidebarBackdrop {
-  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55); z-index: 44;
+  position: fixed; inset: 0; height: var(--app-height, 100dvh); background: rgba(0, 0, 0, 0.55); z-index: 44;
   opacity: 0; pointer-events: none; transition: opacity 0.22s;
 }
 body.is-mobile #app.drawer-open #sidebarBackdrop { display: block; opacity: 1; pointer-events: auto; }
@@ -591,51 +589,19 @@ body.is-mobile .messages { padding: 14px; gap: 18px; }
 body.is-mobile .user-wrap { max-width: 90%; }
 
 /* composer fits narrow screens — two rows: [입력창 | 전송] on top, tool icons below */
-body.is-mobile #composer { padding: 10px 12px 12px; }
+body.is-mobile #composer { padding: 10px 12px max(12px, env(safe-area-inset-bottom)); }
 body.is-mobile .composer-inner { gap: 8px; flex-wrap: wrap; }
-body.is-mobile #promptInput { order: 1; flex: 1 1 0; width: auto; min-width: 0; font-size: 16px; } /* basis 0 so 전송 shares the row; 16px avoids iOS zoom */
+body.is-mobile #promptInput { order: 1; flex: 1 1 0; width: auto; min-width: 0; min-height: 76px; font-size: 16px; } /* basis 0 so 전송 shares the row; 16px avoids iOS zoom */
 body.is-mobile .send { order: 2; height: 48px; min-width: 76px; padding: 0 18px; font-size: 15px; }
 body.is-mobile .composer-tools { order: 3; flex-basis: 100%; }
 body.is-mobile .icon-attach { height: 42px; width: 42px; font-size: 17px; }
 
-/* On mobile, expanded composer becomes a half-screen sheet and keeps controls
-   on a dedicated bottom row so they never overlap the text area. */
-body.is-mobile #composer.expanded {
-  top: auto;
-  height: min(50vh, 420px);
-  z-index: 46;
-}
-body.is-mobile #composer.expanded .composer-inner {
-  flex: 1 1 auto;
-  display: grid;
-  grid-template-columns: 1fr auto;
-  grid-template-rows: 1fr auto;
-  gap: 8px;
-  align-items: end;
-}
-body.is-mobile #composer.expanded #promptInput {
-  grid-column: 1 / -1;
-  grid-row: 1;
-  height: auto;
-  min-height: 0;
-  max-height: none;
-  align-self: stretch;
-}
-body.is-mobile #composer.expanded .composer-tools {
-  grid-column: 1;
-  grid-row: 2;
-  order: initial;
-  flex-basis: auto;
-}
-body.is-mobile #composer.expanded .send {
-  grid-column: 2;
-  grid-row: 2;
-  order: initial;
-}
-body.is-mobile #composer.expanded #modelChips { margin-top: 8px; }
-
 /* modals fill the screen */
-body.is-mobile .modal-card { width: 96vw; max-height: 92vh; }
+body.is-mobile .modal { align-items: stretch; justify-content: stretch; padding: max(10px, env(safe-area-inset-top)) 10px max(10px, env(safe-area-inset-bottom)); overflow: hidden; }
+body.is-mobile .modal-card { width: 100%; max-width: none; max-height: none; min-width: 0; border-radius: 12px; }
+body.is-mobile .modal-head { padding-top: 14px; }
+body.is-mobile .modal-body { padding-left: 14px; padding-right: 14px; overflow-x: hidden; }
+body.is-mobile .modal-foot { padding-left: 14px; padding-right: 14px; }
 body.is-mobile .model-grid { grid-template-columns: 1fr; }
 
 /* model-card header: let the master/vision/use toggles wrap below the name
@@ -658,7 +624,7 @@ body.is-mobile.is-narrow .card-stats { font-size: 9.5px; }
    horizontal scrolling (like viewing a desktop site on a phone) instead of crushing
    the content column down to a few dozen pixels.
    ===================================================================== */
-body.force-desktop { overflow-x: auto; }
+body.force-desktop { overflow-x: auto; overflow-y: hidden; }
 body.force-desktop #app { min-width: 900px; }
 
 /* =====================================================================
@@ -676,6 +642,7 @@ body.force-desktop #app { min-width: 900px; }
   display: flex; align-items: center; justify-content: space-between;
   gap: 8px; margin: 2px 0 6px;
 }
+.sync-row[hidden] { display: none; }
 .sync-status { font-size: 12px; color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .sync-status[data-state="synced"] { color: var(--ok); }
 .sync-status[data-state="error"],
