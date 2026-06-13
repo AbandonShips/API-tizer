@@ -11,6 +11,41 @@ export const MODEL_META = {
 
 export const MAX_LOCAL = 3;
 
+export const MODEL_PRESETS = {
+  openai: [
+    { model: 'gpt-5.5', label: 'GPT-5.5', priceIn: 5, priceOut: 30, vision: true },
+    { model: 'gpt-5.5-pro', label: 'GPT-5.5 Pro', priceIn: 30, priceOut: 180, vision: true },
+    { model: 'gpt-5.4', label: 'GPT-5.4', priceIn: 2.5, priceOut: 15, vision: true },
+    { model: 'gpt-5.4-mini', label: 'GPT-5.4 Mini', priceIn: 0.75, priceOut: 4.5, vision: true },
+    { model: 'gpt-5.4-nano', label: 'GPT-5.4 Nano', priceIn: 0.2, priceOut: 1.25, vision: true },
+    { model: 'chat-latest', label: 'ChatGPT Latest', priceIn: 5, priceOut: 30, vision: true },
+  ],
+  anthropic: [
+    { model: 'claude-fable-5', label: 'Claude Fable 5', priceIn: 10, priceOut: 50, vision: true },
+    { model: 'claude-opus-4-8', label: 'Claude Opus 4.8', priceIn: 5, priceOut: 25, vision: true },
+    { model: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', priceIn: 3, priceOut: 15, vision: true },
+    { model: 'claude-haiku-4-5', label: 'Claude Haiku 4.5', priceIn: 1, priceOut: 5, vision: true },
+    { model: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 Snapshot', priceIn: 1, priceOut: 5, vision: true },
+  ],
+  gemini: [
+    { model: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash', priceIn: 1.5, priceOut: 9, vision: true },
+    { model: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro Preview', priceIn: 2, priceOut: 12, vision: true },
+    { model: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash-Lite', priceIn: 0.25, priceOut: 1.5, vision: true },
+    { model: 'gemini-3-flash-preview', label: 'Gemini 3 Flash Preview', priceIn: 0.5, priceOut: 3, vision: true },
+    { model: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', priceIn: 1.25, priceOut: 10, vision: true },
+    { model: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', priceIn: 0.3, priceOut: 2.5, vision: true },
+    { model: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash-Lite', priceIn: 0.1, priceOut: 0.4, vision: true },
+  ],
+  grok: [
+    { model: 'grok-4.3', label: 'Grok 4.3', priceIn: 1.25, priceOut: 2.5, vision: true },
+    { model: 'grok-build-0.1', label: 'Grok Build 0.1', priceIn: 1, priceOut: 2, vision: false },
+  ],
+};
+
+export function modelPresetFor(type, modelName) {
+  return (MODEL_PRESETS[type] || []).find((p) => p.model === modelName) || null;
+}
+
 export function defaultSettings() {
   return {
     customPrompt: '',
@@ -81,19 +116,34 @@ export function estimateTokens(text) {
 // Order matters: more specific patterns first.
 const PRICING = [
   // OpenAI
+  [/gpt-5\.5-pro/i, 30.00, 180.00],
+  [/gpt-5\.5/i, 5.00, 30.00],
+  [/gpt-5\.4-pro/i, 30.00, 180.00],
   [/gpt-5.*mini|gpt-4o-mini|gpt-4\.1-mini/i, 0.75, 4.50],
+  [/gpt-5\.4-nano/i, 0.20, 1.25],
+  [/gpt-5\.4/i, 2.50, 15.00],
   [/gpt-5|gpt-4o|gpt-4\.1/i, 2.50, 10.00],
+  [/chat-latest/i, 5.00, 30.00],
   [/o4-mini|o3-mini/i, 1.10, 4.40],
   // Anthropic
-  [/claude.*haiku|haiku/i, 0.80, 4.00],
-  [/claude.*opus|opus/i, 15.00, 75.00],
+  [/claude-fable-5|claude-mythos-5/i, 10.00, 50.00],
+  [/claude.*haiku|haiku/i, 1.00, 5.00],
+  [/claude.*opus|opus/i, 5.00, 25.00],
   [/claude.*sonnet|claude-3-7|sonnet/i, 3.00, 15.00],
   // Gemini
+  [/gemini-3\.5-flash/i, 1.50, 9.00],
+  [/gemini-3\.1-pro/i, 2.00, 12.00],
+  [/gemini-3\.1-flash-lite/i, 0.25, 1.50],
+  [/gemini-3-flash/i, 0.50, 3.00],
+  [/gemini-2\.5-flash-lite/i, 0.10, 0.40],
+  [/gemini-2\.5-flash/i, 0.30, 2.50],
+  [/gemini-2\.5-pro/i, 1.25, 10.00],
   [/gemini.*flash-lite|flash-8b/i, 0.075, 0.30],
   [/gemini.*flash/i, 1.50, 9.00],
   [/gemini.*pro/i, 1.25, 10.00],
   // xAI Grok
-  [/grok-4|grok-3/i, 1.25, 2.50],
+  [/grok-build-0\.1/i, 1.00, 2.00],
+  [/grok-4\.3|grok-4|grok-3/i, 1.25, 2.50],
   [/grok-2|grok/i, 2.00, 10.00],
 ];
 

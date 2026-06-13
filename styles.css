@@ -36,7 +36,7 @@ body.theme-light {
 }
 
 * { box-sizing: border-box; }
-html, body { height: 100%; margin: 0; overflow: hidden; }
+html, body { height: var(--app-height, 100dvh); margin: 0; overflow: hidden; overscroll-behavior: none; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo",
     "Malgun Gothic", Roboto, sans-serif;
@@ -141,6 +141,8 @@ body.theme-light button.brand:hover span { color: var(--accent); }
 .usage-panel[hidden] { display: none; }
 .usage-head { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
 .usage-collapsible .usage-head { cursor: pointer; }
+.usage-collapsible .usage-head::after { content: '▸'; color: var(--muted); font-size: 10px; margin-left: 4px; }
+.usage-collapsible.open .usage-head::after { content: '▾'; }
 .usage-title { font-size: 10.5px; color: var(--muted); }
 .usage-q { width: 13px; height: 13px; font-size: 8px; margin-left: 2px; }
 .usage-total { font-size: 14px; font-weight: 700; color: var(--ok); }
@@ -255,6 +257,21 @@ body.theme-light button.brand:hover span { color: var(--accent); }
 .card-status { font-size: 11px; padding: 2px 8px; border-radius: 999px; white-space: pre-line; line-height: 1.7; }
 .status-wait { color: var(--muted); }
 .status-err { color: var(--danger); }
+.status-pending { color: var(--muted); }
+.status-streaming { color: #ffce54; }
+.status-done { color: var(--ok); }
+.status-error { color: var(--danger); }
+.master-progress-list { display: grid; gap: 7px; max-width: 520px; }
+.master-progress-row {
+  display: grid; grid-template-columns: 10px minmax(78px, auto) 1fr; align-items: center; gap: 8px;
+  color: var(--muted); font-size: 12.5px;
+}
+.master-progress-dot { width: 8px; height: 8px; border-radius: 50%; opacity: 0.9; }
+.master-progress-name { color: var(--text); font-weight: 600; }
+.master-progress-state { font-weight: 600; }
+.master-progress-row.status-streaming .master-progress-state { color: #ffce54; }
+.master-progress-row.status-done .master-progress-state { color: var(--ok); }
+.master-progress-row.status-error .master-progress-state { color: var(--danger); }
 
 /* Unified */
 .answers-unified { display: flex; flex-direction: column; gap: 12px; }
@@ -265,10 +282,10 @@ body.theme-light button.brand:hover span { color: var(--accent); }
 .unified-inner { padding: 8px; display: flex; flex-direction: column; gap: 10px; }
 
 /* ---------- Composer ---------- */
-#composer { border-top: 1px solid var(--border); padding: 12px 18px max(14px, env(safe-area-inset-bottom)); background: var(--bg-2); }
+#composer { border-top: 1px solid var(--border); padding: 14px 18px max(14px, env(safe-area-inset-bottom)); background: var(--bg-2); flex: 0 0 auto; }
 #composer.drag-over { outline: 2px dashed var(--accent); outline-offset: -6px; border-radius: 12px; }
-.composer-inner { display: flex; gap: 10px; align-items: flex-end; }
-.composer-tools { display: flex; gap: 10px; align-items: flex-end; flex: 0 0 auto; }
+.composer-inner { display: flex; gap: 10px; align-items: center; }
+.composer-tools { display: flex; gap: 10px; align-items: center; flex: 0 0 auto; }
 .icon-attach {
   height: 44px; width: 44px; flex: 0 0 auto; border: 1px solid var(--border);
   background: var(--bg-3); color: var(--muted); border-radius: 12px; cursor: pointer;
@@ -332,6 +349,10 @@ body.theme-light button.brand:hover span { color: var(--accent); }
 .bubble-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .bubble-attachments img { width: 120px; max-height: 120px; object-fit: cover; border-radius: 8px; cursor: pointer; }
 .bubble-file { display: inline-flex; align-items: center; gap: 6px; background: rgba(0,0,0,0.18); border-radius: 8px; padding: 5px 9px; font-size: 12px; }
+
+.link-previews { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; margin-top: 12px; max-width: 520px; }
+.link-previews a { display: block; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--bg); aspect-ratio: 4 / 3; }
+.link-previews img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
 .model-chips { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
 .chip {
@@ -440,6 +461,7 @@ textarea#customPrompt {
   background: var(--bg); color: var(--text); border: 1px solid var(--border);
   border-radius: 8px; padding: 8px 10px; font-family: inherit; font-size: 13px; outline: none;
 }
+.field datalist { display: none; }
 .field input:focus { border-color: var(--accent); }
 .price-field label { display: flex; align-items: center; }
 .price-row { display: flex; align-items: center; gap: 8px; }
@@ -556,6 +578,11 @@ kbd {
    drive both automatic and forced mobile mode.
    ===================================================================== */
 body.is-mobile #app { grid-template-columns: 1fr; }
+body.is-mobile #app {
+  position: fixed;
+  left: 0; right: 0; top: var(--vv-offset-top, 0px); bottom: auto;
+  height: var(--app-height, 100dvh);
+}
 
 /* sidebar becomes an off-canvas drawer */
 body.is-mobile #sidebar {
@@ -589,8 +616,8 @@ body.is-mobile .messages { padding: 14px; gap: 18px; }
 body.is-mobile .user-wrap { max-width: 90%; }
 
 /* composer fits narrow screens — two rows: [입력창 | 전송] on top, tool icons below */
-body.is-mobile #composer { padding: 10px 12px max(12px, env(safe-area-inset-bottom)); }
-body.is-mobile .composer-inner { gap: 8px; flex-wrap: wrap; }
+body.is-mobile #composer { padding: 14px 12px max(14px, env(safe-area-inset-bottom)); }
+body.is-mobile .composer-inner { gap: 8px; flex-wrap: wrap; align-items: center; }
 body.is-mobile #promptInput { order: 1; flex: 1 1 0; width: auto; min-width: 0; min-height: 76px; font-size: 16px; } /* basis 0 so 전송 shares the row; 16px avoids iOS zoom */
 body.is-mobile .send { order: 2; height: 48px; min-width: 76px; padding: 0 18px; font-size: 15px; }
 body.is-mobile .composer-tools { order: 3; flex-basis: 100%; }

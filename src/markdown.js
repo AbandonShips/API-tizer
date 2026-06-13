@@ -51,6 +51,7 @@ function highlightCode(rawCode) {
 
 function inline(text) {
   let t = text;
+  const links = [];
   // inline code
   t = t.replace(/`([^`]+)`/g, (_, c) => `<code>${c}</code>`);
   // bold
@@ -60,7 +61,25 @@ function inline(text) {
   t = t.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
   // links [text](url) — only http/https/mailto allowed
   t = t.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/g,
-    (_, label, url) => `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`);
+    (_, label, url) => {
+      const key = `\u0000LINK${links.length}\u0000`;
+      links.push(`<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`);
+      return key;
+    });
+  // bare URLs — common in provider citations. Trim punctuation that usually
+  // belongs to the sentence, not the URL.
+  t = t.replace(/(^|[\s(])((?:https?:\/\/|mailto:)[^\s<]+)/g, (_, lead, rawUrl) => {
+    let url = rawUrl;
+    let tail = '';
+    while (/[.,!?;:)]$/.test(url)) {
+      tail = url.slice(-1) + tail;
+      url = url.slice(0, -1);
+    }
+    if (!url) return lead + rawUrl;
+    const label = url.length > 88 ? url.slice(0, 84) + '...' : url;
+    return `${lead}<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>${tail}`;
+  });
+  t = t.replace(/\u0000LINK(\d+)\u0000/g, (_, idx) => links[Number(idx)] || '');
   return t;
 }
 

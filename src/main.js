@@ -1,5 +1,6 @@
 import {
   defaultSettings, normalizeSettings, MODEL_META, MAX_LOCAL,
+  MODEL_PRESETS, modelPresetFor,
   localCount, makeLocalModel, enabledModels,
   estimateTokens, estimateCost, effectivePrice, addUsage, getUsage, resetUsage,
 } from './state.js';
@@ -211,6 +212,8 @@ function setupViewportHeight() {
   window.addEventListener('resize', update, { passive: true });
   window.visualViewport?.addEventListener('resize', update, { passive: true });
   window.visualViewport?.addEventListener('scroll', update, { passive: true });
+  promptInput.addEventListener('focus', () => setTimeout(update, 80), { passive: true });
+  promptInput.addEventListener('blur', () => setTimeout(update, 80), { passive: true });
 }
 
 function onGlobalKeydown(e) {
@@ -1461,17 +1464,12 @@ function renderUsage() {
 
   const list = $('#usageList');
   list.innerHTML = '';
-  const mobile = isMobileLayout();
-  if (mobile) {
-    panel.classList.add('usage-collapsible');
-    if (!panel.dataset.boundToggle) {
-      panel.dataset.boundToggle = '1';
-      panel.querySelector('.usage-head')?.addEventListener('click', () => {
-        panel.classList.toggle('open');
-      });
-    }
-  } else {
-    panel.classList.remove('usage-collapsible', 'open');
+  panel.classList.add('usage-collapsible');
+  if (!panel.dataset.boundToggle) {
+    panel.dataset.boundToggle = '1';
+    panel.querySelector('.usage-head')?.addEventListener('click', () => {
+      panel.classList.toggle('open');
+    });
   }
   for (const m of enabledCloud) {
     const cost = perModel[m.id]?.cost || 0;
@@ -1594,6 +1592,41 @@ function refreshMasterProgress(turn) {
   refreshCard(turn, 'master', turn.master);
 }
 
+function renderResponseHtml(container, text) {
+  container.innerHTML = renderMarkdown(text || '');
+  enhanceResponseLinks(container);
+}
+
+function enhanceResponseLinks(container) {
+  const links = [...container.querySelectorAll('a[href]')];
+  for (const a of links) {
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+  }
+  const imageLinks = links
+    .map((a) => a.href)
+    .filter((url, idx, arr) => isPreviewableImageUrl(url) && arr.indexOf(url) === idx)
+    .slice(0, 8);
+  container.querySelector('.link-previews')?.remove();
+  if (!imageLinks.length) return;
+  const previews = h('div', { class: 'link-previews' });
+  for (const url of imageLinks) {
+    previews.appendChild(h('a', { href: url, target: '_blank', rel: 'noopener noreferrer', title: url }, [
+      h('img', { src: url, alt: '링크 이미지 미리보기', loading: 'lazy' }),
+    ]));
+  }
+  container.appendChild(previews);
+}
+
+function isPreviewableImageUrl(url) {
+  try {
+    const u = new URL(url);
+    return /^https?:$/.test(u.protocol) && /\.(png|jpe?g|gif|webp|avif)(?:$|[?#])/i.test(u.pathname + u.search + u.hash);
+  } catch {
+    return false;
+  }
+}
+
 async function copyResp(turn, key, btn) {
   const resp = key === 'master' ? turn.master : turn.responses[key];
   await copyText(resp?.text || '', btn);
@@ -1631,8 +1664,8 @@ async function resendQuestion(turn) {
 function applyRespToBody(body, resp, turn, key) {
   body.classList.remove('streaming');
   if (!resp || resp.status === 'pending') {
-    const text = key === 'master' ? masterProgressText(turn) : '서버 응답 대기 중…';
-    body.innerHTML = `<span class="card-status status-wait">${escapeText(text)}</span>`;
+    if (key === 'master') renderMasterProgress(body, turn);
+    else body.innerHTML = '<span class="card-status status-wait status-pending">서버 응답 대기 중…</span>';
     return;
   }
   if (resp.status === 'streaming') {
@@ -1641,7 +1674,7 @@ function applyRespToBody(body, resp, turn, key) {
       body.classList.remove('streaming');
       body.innerHTML = '<span class="card-status status-wait">마스터가 전체 내용 취합 중…</span>';
     } else {
-      body.innerHTML = renderMarkdown(resp.text || '');
+      renderResponseHtml(body, resp.text || '');
     }
     return;
   }
@@ -1650,7 +1683,7 @@ function applyRespToBody(body, resp, turn, key) {
     return;
   }
   // done
-  body.innerHTML = renderMarkdown(resp.text || '');
+  renderResponseHtml(body, resp.text || '');
   // inline citation footnotes [n] + sources block
   if (resp.citations && resp.citations.length) {
     linkifyRefs(body, resp.citations);
@@ -1664,6 +1697,33 @@ function modelProgressLabel(resp) {
   if (resp.status === 'done') return '응답 완료';
   if (resp.status === 'error') return resp.error === '중단됨' ? '응답 중단됨' : '오류';
   return '대기 중';
+}
+
+function modelProgressClass(resp) {
+  if (!resp || resp.status === 'pending') return 'status-pending';
+  if (resp.status === 'streaming') return 'status-streaming';
+  if (resp.status === 'done') return 'status-done';
+  if (resp.status === 'error') return 'status-error';
+  return 'status-pending';
+}
+
+function renderMasterProgress(body, turn) {
+  const models = turnModels(turn);
+  if (!models.length) {
+    body.innerHTML = '<span class="card-status status-wait status-pending">서브 에이전트 응답 대기 중…</span>';
+    return;
+  }
+  const wrap = h('div', { class: 'master-progress-list' });
+  for (const m of models) {
+    const resp = turn.responses?.[m.id];
+    wrap.appendChild(h('div', { class: `master-progress-row ${modelProgressClass(resp)}` }, [
+      h('span', { class: 'master-progress-dot', style: `background:${MODEL_META[m.type]?.color || 'var(--muted)'}` }),
+      h('span', { class: 'master-progress-name', text: m.label }),
+      h('span', { class: 'master-progress-state', text: modelProgressLabel(resp) }),
+    ]));
+  }
+  body.textContent = '';
+  body.appendChild(wrap);
 }
 
 function masterProgressText(turn) {
@@ -1959,7 +2019,7 @@ async function runModel(turn, model, signal) {
       onChunk: (_chunk, fullText) => {
         resp.text = fullText;
         const b = document.getElementById(`body-${turn.id}-${model.id}`);
-        if (b) { b.classList.add('streaming'); b.innerHTML = renderMarkdown(fullText); }
+        if (b) { b.classList.add('streaming'); renderResponseHtml(b, fullText); }
         refreshMasterProgress(turn);
       },
     });
@@ -2028,7 +2088,7 @@ async function runMaster(turn, master, active, signal) {
       onChunk: (_c, fullText) => {
         turn.master.text = fullText;
         const b = document.getElementById(`body-${turn.id}-master`);
-        if (b) { b.classList.add('streaming'); b.innerHTML = renderMarkdown(fullText); }
+        if (b) { b.classList.add('streaming'); renderResponseHtml(b, fullText); }
       },
     });
     turn.master.text = full;
@@ -2190,6 +2250,7 @@ function renderModelSettings() {
 function modelSettingRow(m) {
   const meta = MODEL_META[m.type];
   const isLocal = m.type === 'local';
+  const listId = `model-presets-${m.id}`;
   const keyField = h('div', { class: 'field full' }, [
     h('label', { text: isLocal ? 'API 키 (선택)' : 'API 키' }),
     h('input', { type: 'password', value: m.apiKey || '', placeholder: isLocal ? '필요 시 입력' : 'sk-...', 'data-id': m.id, 'data-k': 'apiKey' }),
@@ -2224,7 +2285,15 @@ function modelSettingRow(m) {
       ]),
       h('div', { class: 'field' }, [
         h('label', { text: '모델 이름' }),
-        h('input', { value: m.model, 'data-id': m.id, 'data-k': 'model' }),
+        h('input', {
+          value: m.model,
+          list: listId,
+          placeholder: presetPlaceholder(m.type),
+          'data-id': m.id,
+          'data-k': 'model',
+          onchange: (e) => applyModelPreset(m.id, e.currentTarget.value),
+        }),
+        modelPresetDatalist(m.type, listId),
       ]),
       h('div', { class: 'field full' }, [
         h('label', { text: isLocal ? 'Base URL (Ollama: http://localhost:11434/v1, LM Studio: http://localhost:1234/v1)' : 'Base URL' }),
@@ -2235,6 +2304,41 @@ function modelSettingRow(m) {
     ]),
   ]);
   return row;
+}
+
+function presetPlaceholder(type) {
+  return (MODEL_PRESETS[type] || []).length ? '목록에서 선택하거나 직접 입력' : '모델 이름 직접 입력';
+}
+
+function modelPresetDatalist(type, id) {
+  const presets = MODEL_PRESETS[type] || [];
+  const list = h('datalist', { id });
+  for (const p of presets) {
+    list.appendChild(h('option', {
+      value: p.model,
+      label: `${p.label} · 입력 $${p.priceIn}/1M · 출력 $${p.priceOut}/1M`,
+    }));
+  }
+  return list;
+}
+
+function applyModelPreset(modelId, value) {
+  const m = settings.models.find((x) => x.id === modelId);
+  if (!m) return;
+  const preset = modelPresetFor(m.type, value);
+  if (!preset) return;
+  m.model = preset.model;
+  m.priceIn = preset.priceIn;
+  m.priceOut = preset.priceOut;
+  m.vision = !!preset.vision;
+  const row = document.querySelector(`[data-row="${CSS.escape(modelId)}"]`);
+  if (!row) return;
+  const inInput = row.querySelector('input[data-k="priceIn"]');
+  const outInput = row.querySelector('input[data-k="priceOut"]');
+  const visionInput = row.querySelector('input[data-k="vision"]');
+  if (inInput) inInput.value = preset.priceIn;
+  if (outInput) outInput.value = preset.priceOut;
+  if (visionInput) visionInput.checked = !!preset.vision;
 }
 
 // Per-model price override (USD per 1M tokens). Pre-filled with the built-in
@@ -2287,7 +2391,15 @@ function readModelForm() {
     if (!m) return;
     const k = input.dataset.k;
     if (k === 'enabled' || k === 'vision') m[k] = input.checked;
-    else if (k === 'priceIn' || k === 'priceOut') {
+    else if (k === 'model') {
+      m[k] = input.value.trim();
+      const preset = modelPresetFor(m.type, m[k]);
+      if (preset) {
+        m.priceIn = preset.priceIn;
+        m.priceOut = preset.priceOut;
+        m.vision = !!preset.vision;
+      }
+    } else if (k === 'priceIn' || k === 'priceOut') {
       const v = parseFloat(input.value);
       m[k] = Number.isFinite(v) ? v : undefined;
     } else m[k] = input.value;
