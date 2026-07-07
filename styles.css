@@ -120,6 +120,7 @@ body.theme-light button.brand:hover span { color: var(--accent); }
 .chat-item:hover { background: var(--bg-3); color: var(--text); }
 .chat-item.active { background: var(--panel); color: var(--text); border-color: var(--border); }
 .chat-item .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.chat-item .chat-instr-badge { font-size: 11px; margin-left: 4px; opacity: 0.7; }
 .chat-item .acts { display: flex; gap: 4px; align-items: center; }
 .chat-item .ren, .chat-item .del { opacity: 0; font-size: 13px; }
 .chat-item:hover .ren, .chat-item:hover .del { opacity: 0.7; }
@@ -185,6 +186,7 @@ body.theme-light button.brand:hover span { color: var(--accent); }
   display: flex; align-items: center; justify-content: space-between; background: var(--bg-2);
 }
 #chatTitle { font-size: 15px; margin: 0; font-weight: 600; }
+.topbar-left { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .topbar-right { display: flex; align-items: center; gap: 16px; }
 
 .seg { display: flex; background: var(--bg-3); border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
@@ -510,6 +512,25 @@ textarea#customPrompt {
   display: inline-flex; align-items: center; justify-content: center;
 }
 .icon-round:hover { border-color: var(--accent); color: var(--text); }
+
+.icon-round.has-custom {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(108, 140, 255, 0.12);
+  position: relative;
+}
+
+.icon-round.has-custom::after {
+  content: '';
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 8px;
+  height: 8px;
+  background: var(--accent);
+  border-radius: 50%;
+  border: 1px solid var(--bg-2);
+}
 .help-q {
   display: inline-flex; align-items: center; justify-content: center;
   width: 16px; height: 16px; border-radius: 50%; background: var(--bg-3); border: 1px solid var(--border);

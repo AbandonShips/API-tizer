@@ -23,6 +23,19 @@ import { runSync, isConfigured as syncConfigured, getEndpoint, setEndpoint, serv
 import { streamChat, supportsWebSearch } from './providers.js';
 import { renderMarkdown } from './markdown.js';
 
+// Rich formatting instruction (이모지, 표, 구조화 등) injected as system prompt
+// when the rich style is enabled (global or per-chat).
+// When per-chat rich checkbox is on, this is included so both individual answers
+// and the master summary use rich formatting. When off, it is omitted.
+const RICH_STYLE_INSTRUCTION =
+  '모든 답변은 가독성이 높고 시각적으로 풍부한 마크다운 형식으로 작성하세요.\n' +
+  '- ## 제목, ### 소제목을 사용해 명확히 구조화하세요.\n' +
+  '- 번호 목록과 불릿 목록을 적극 활용하세요.\n' +
+  '- 데이터, 비교, 목록, 단계 설명 등은 반드시 마크다운 표(| 컬럼 |)로 표현하세요. 구분선(|---|)을 반드시 포함하세요.\n' +
+  '- 상황에 맞게 자연스럽게 이모지(✅ 📌 💡 ⚠️ 등)를 사용하세요. 이모지는 주로 제목이나 중요한 포인트 앞에 배치하는 것이 좋습니다.\n' +
+  '- 핵심 내용은 **굵게**, 코드나 용어는 `인라인 코드`로 강조하세요.\n' +
+  '- 전체적으로 친절하고 읽기 쉬우며 시각적으로 잘 정리된 스타일을 유지하세요.';
+
 // ---------- tiny DOM helper ----------
 function h(tag, props = {}, children = []) {
   const el = document.createElement(tag);
@@ -59,6 +72,7 @@ let loginMode = localStorage.getItem(LOGIN_MODE_KEY) || 'online'; // 'online' | 
 const messagesEl = $('#messages');
 const chatListEl = $('#chatList');
 const chatTitleEl = $('#chatTitle');
+const chatInstructionsBtn = $('#chatInstructionsBtn');
 const promptInput = $('#promptInput');
 const sendBtn = $('#sendBtn');
 const stopBtn = $('#stopBtn');
@@ -116,6 +130,17 @@ function initAppEvents() {
   $('#syncNowBtn').addEventListener('click', () => runSyncSafe());
   sendBtn.addEventListener('click', send);
   stopBtn.addEventListener('click', stop);
+  chatInstructionsBtn.addEventListener('click', openChatInstructions);
+
+  // chat instructions modal
+  const ciModal = $('#chatInstructionsModal');
+  if (ciModal) {
+    ciModal.querySelectorAll('[data-chat-instr-close]').forEach(el => el.addEventListener('click', closeChatInstructions));
+    $('#chatInstructionsSaveBtn').addEventListener('click', saveChatInstructions);
+    // close on backdrop click already handled by data attr? but add
+    const backdrop = ciModal.querySelector('.modal-backdrop');
+    if (backdrop) backdrop.addEventListener('click', closeChatInstructions);
+  }
 
   // mobile drawer
   $('#menuBtn').addEventListener('click', toggleDrawer);
@@ -876,11 +901,13 @@ async function refreshAfterSync() {
   chats = await listChats(session.id, session.key);
   renderChatList();
   if (currentChat) {
-    if (chats.some((c) => c.id === currentChat.id)) {
+    const fresh = chats.find((c) => c.id === currentChat.id);
+    if (fresh) {
+      currentChat = fresh;  // pick up updated chatPrompt / rich override from sync
       turns = await listTurns(currentChat.id, session.key);
       renderMessages();
     } else {
-      currentChat = null; turns = []; chatTitleEl.textContent = ''; renderMessages();
+      currentChat = null; turns = []; renderChatTitle(); renderMessages();
     }
   }
 }
@@ -913,7 +940,7 @@ async function bootAppData() {
   chats = await listChats(session.id, session.key);
   renderChatList();
   if (chats.length) await openChat(chats[0].id);
-  else { chatTitleEl.textContent = ''; renderMessages(); }
+  else { renderChatTitle(); renderMessages(); }
   startIdleWatch();
 }
 
@@ -1246,6 +1273,7 @@ function chatItem(c) {
     h('span', { class: 'pin' + (c.pinned ? ' on' : ''), title: c.pinned ? '고정 해제' : '고정',
       onclick: (e) => { e.stopPropagation(); togglePin(c); } }, c.pinned ? '📌' : '📍'),
     h('span', { class: 'title', title: c.title, text: c.title }),
+    (c.chatPrompt && c.chatPrompt.trim() || (c.chatRichStyle === true || c.chatRichStyle === false)) ? h('span', { class: 'chat-instr-badge', title: '이 채팅 전용 지침 있음' }, '📝') : null,
     h('span', { class: 'acts' }, [
       h('span', { class: 'fld', title: '폴더 지정',
         onclick: (e) => { e.stopPropagation(); assignFolder(c, item); } }, '📁'),
@@ -1303,7 +1331,7 @@ function beginRename(c, item) {
         c.title = v.slice(0, 80);
         await updateChatMeta(session.id, session.key, c);
         scheduleSync();
-        if (currentChat && currentChat.id === c.id) chatTitleEl.textContent = c.title;
+        if (currentChat && currentChat.id === c.id) renderChatTitle();
       }
     }
     renderChatList();
@@ -1359,7 +1387,7 @@ async function newChat(options = {}) {
   // A fresh room forgets prior context → saves tokens.
   currentChat = null;
   turns = [];
-  chatTitleEl.textContent = '';
+  renderChatTitle();
   // Web search defaults ON for a new conversation.
   settings.webSearchEnabled = true;
   applyWebSearchButton();
@@ -1374,7 +1402,7 @@ async function openChat(id) {
   currentChat = chats.find((c) => c.id === id) || null;
   if (!currentChat) return;
   turns = await listTurns(id, session.key);
-  chatTitleEl.textContent = currentChat.title;
+  renderChatTitle();
   renderChatList();
   renderMessages();
   pushAppHistoryState('chat', id);
@@ -1390,7 +1418,7 @@ async function removeChat(id) {
     // The currently-open chat was deleted → return to an empty (no-chat) state.
     currentChat = null;
     turns = [];
-    chatTitleEl.textContent = '';
+    renderChatTitle();
   }
   renderChatList();
   renderMessages();
@@ -1882,13 +1910,30 @@ function scrollToBottom() {
 // =====================================================================
 function buildHistory(model, currentTurn) {
   // Per-model conversation: only turns where this model answered,
-  // keeping clean user/assistant alternation. System = custom prompt.
+  // keeping clean user/assistant alternation.
+  // Priority: per-chat prompt (if set) first, then global custom, then rich formatting instruction (effective for this chat).
   const modelId = model.id;
   const allowImages = !!model.vision;
   const msgs = [];
-  if (settings.customPrompt.trim()) {
+
+  const chatPrompt = currentChat?.chatPrompt?.trim() || '';
+  if (chatPrompt) {
+    // Per-chat prompt present → use only this, ignore global customPrompt entirely
+    msgs.push({ role: 'system', content: chatPrompt });
+  } else if (settings.customPrompt.trim()) {
     msgs.push({ role: 'system', content: settings.customPrompt.trim() });
   }
+
+  // Rich formatting: respect per-chat explicit choice if the user has set it via the per-chat dialog.
+  // Otherwise fall back to global. This checkbox directly controls whether the rich instruction goes into the API.
+  const chatRich = currentChat && (currentChat.chatRichStyle === true || currentChat.chatRichStyle === false)
+    ? currentChat.chatRichStyle
+    : null;
+  const effectiveRich = chatRich !== null ? chatRich : settings.richStyle;
+  if (effectiveRich !== false) {
+    msgs.push({ role: 'system', content: RICH_STYLE_INSTRUCTION });
+  }
+
   for (const t of turns) {
     if (t.id === currentTurn.id) continue;
     const r = t.responses?.[modelId];
@@ -1921,12 +1966,12 @@ async function send() {
   if (!currentChat) {
     currentChat = await createChat(session.id, session.key, title);
     chats.unshift(currentChat);
-    chatTitleEl.textContent = currentChat.title;
+    renderChatTitle();
     renderChatList();
   } else if (turns.length === 0) {
     currentChat.title = title;
     await updateChatMeta(session.id, session.key, currentChat);
-    chatTitleEl.textContent = currentChat.title;
+    renderChatTitle();
     renderChatList();
   }
 
@@ -2071,13 +2116,32 @@ async function runMaster(turn, master, active, signal) {
 
   const instruction =
     '당신은 여러 AI의 답변을 종합하는 편집자입니다. 아래 답변들을 바탕으로 ' +
-    "가장 정확하고 유용한 '하나의 최종 답변'을 작성하세요. 그런 다음 마지막에 " +
-    "'### 소수 의견' 섹션을 추가해, 다른 모델들과 눈에 띄게 다른 주장을 한 모델이 있으면 " +
+    "가장 정확하고 유용한 '하나의 최종 답변'을 작성하세요. 각 모델의 주요 내용, 핵심 근거, 구체적인 예시나 세부 사항을 적절히 포함하여, 너무 짧고 간결하게 요약하지 말고 충분히 자세하고 포괄적으로 작성하세요. " +
+    "그런 다음 마지막에 '### 소수 의견' 섹션을 추가해, 다른 모델들과 눈에 띄게 다른 주장을 한 모델이 있으면 " +
     '어떤 모델이 무엇을 다르게 말했는지 1~3줄로 요약하세요. 의미 있는 차이가 없으면 ' +
     "'특이한 소수 의견 없음'이라고 적으세요.";
 
   const messages = [];
-  if (settings.customPrompt.trim()) messages.push({ role: 'system', content: settings.customPrompt.trim() });
+
+  const chatPrompt = currentChat?.chatPrompt?.trim() || '';
+  if (chatPrompt) {
+    // Per-chat prompt present → use only this, ignore global customPrompt entirely
+    messages.push({ role: 'system', content: chatPrompt });
+  } else if (settings.customPrompt.trim()) {
+    messages.push({ role: 'system', content: settings.customPrompt.trim() });
+  }
+
+  // Rich formatting: respect per-chat explicit choice (checkbox directly controls API inclusion)
+  // When enabled, RICH_STYLE_INSTRUCTION is sent before the master instruction,
+  // so the summary will also be written with emojis, tables, structure etc.
+  const chatRich = currentChat && (currentChat.chatRichStyle === true || currentChat.chatRichStyle === false)
+    ? currentChat.chatRichStyle
+    : null;
+  const effectiveRich = chatRich !== null ? chatRich : settings.richStyle;
+  if (effectiveRich !== false) {
+    messages.push({ role: 'system', content: RICH_STYLE_INSTRUCTION });
+  }
+
   messages.push({ role: 'system', content: instruction });
   messages.push({ role: 'user', content: block });
   turn.master.promptTokens = estimateTokens(messages.map((m) => m.content).join('\n'));
@@ -2223,6 +2287,8 @@ function openSettings() {
   $('#backupPass2').value = '';
   $('#backupImportPass').value = '';
   $('#showCostToggle').checked = settings.showCost !== false;
+  const richEl = $('#richStyleToggle');
+  if (richEl) richEl.checked = settings.richStyle !== false;
   $('#resetUserLabel').textContent = session ? `'${session.displayName}'` : '현재 사용자';
   renderModelSettings();
   refreshStorageInfo();
@@ -2230,6 +2296,80 @@ function openSettings() {
   settingsModal.hidden = false;
 }
 function closeSettings() { settingsModal.hidden = true; }
+
+// =====================================================================
+//  Per-chat instructions (chat-specific prompt + rich override)
+// =====================================================================
+let chatInstructionsModal = null;
+
+async function openChatInstructions() {
+  if (!currentChat) {
+    // Create a new chat immediately when user wants to set per-chat instructions.
+    // This allows configuring prompt + rich style before sending the first message.
+    currentChat = await createChat(session.id, session.key, '새 채팅');
+    chats.unshift(currentChat);
+    renderChatTitle();
+    renderChatList();
+    renderMessages();   // switch UI to this new (empty) chat
+  }
+
+  if (!chatInstructionsModal) chatInstructionsModal = $('#chatInstructionsModal');
+
+  $('#chatInstructionsInput').value = currentChat.chatPrompt || '';
+  const richToggle = $('#chatRichStyleToggle');
+  const chatRich = currentChat.chatRichStyle;
+  richToggle.checked = chatRich === null || chatRich === undefined ? settings.richStyle : !!chatRich;
+
+  chatInstructionsModal.hidden = false;
+
+  // focus
+  setTimeout(() => $('#chatInstructionsInput').focus(), 50);
+}
+
+function closeChatInstructions() {
+  const modal = $('#chatInstructionsModal');
+  if (modal) modal.hidden = true;
+}
+
+async function saveChatInstructions() {
+  if (!currentChat) return;
+
+  const input = $('#chatInstructionsInput').value.trim();
+  const richChecked = $('#chatRichStyleToggle').checked;
+
+  currentChat.chatPrompt = input;
+  // store explicit override only if different from global? but store always the choice for the chat
+  currentChat.chatRichStyle = richChecked;  // true or false explicit for this chat
+
+  // persist meta
+  await updateChatMeta(session.id, session.key, currentChat);
+  scheduleSync();
+
+  // update header title + button state, and sidebar badge
+  renderChatTitle();
+  renderChatList();
+
+  closeChatInstructions();
+
+  // optional: tell user
+  // alert('이 채팅 전용 지침이 저장되었습니다. 다음 메시지부터 적용됩니다.');
+}
+
+function renderChatTitle() {
+  if (!currentChat) {
+    chatTitleEl.textContent = '';
+    if (chatInstructionsBtn) chatInstructionsBtn.classList.remove('has-custom');
+    return;
+  }
+  chatTitleEl.textContent = currentChat.title || '';
+
+  // Indicate in the button if this chat has custom instructions
+  if (chatInstructionsBtn) {
+    const hasCustom = !!(currentChat.chatPrompt && currentChat.chatPrompt.trim()) ||
+                      (currentChat.chatRichStyle === true || currentChat.chatRichStyle === false);
+    chatInstructionsBtn.classList.toggle('has-custom', hasCustom);
+  }
+}
 
 async function refreshStorageInfo() {
   const el = $('#storageInfo');
@@ -2413,6 +2553,8 @@ function saveSettingsFromForm() {
   const lock = parseInt($('#autoLockInput').value, 10);
   settings.autoLockMinutes = Number.isFinite(lock) && lock >= 0 ? lock : 60;
   settings.showCost = $('#showCostToggle').checked;
+  const richEl = $('#richStyleToggle');
+  if (richEl) settings.richStyle = richEl.checked;
   readModelForm();
   persistSettings();
   masterToggle.checked = settings.masterEnabled;
@@ -2456,10 +2598,12 @@ async function resetEverything() {
   renderChips();
   renderChatList();
   renderMessages();
-  chatTitleEl.textContent = '';
+  renderChatTitle();
 
   // refresh the open settings form to defaults
   $('#customPrompt').value = settings.customPrompt;
+  const richEl = $('#richStyleToggle');
+  if (richEl) richEl.checked = settings.richStyle !== false;
   renderModelSettings();
   refreshStorageInfo();
   $('#saveHint').textContent = '초기화 완료 ✓';
@@ -2482,7 +2626,7 @@ async function resetChatsOnly() {
   chats = [];
   currentChat = null;
   turns = [];
-  chatTitleEl.textContent = '';
+  renderChatTitle();
   renderChatList();
   renderMessages();
   refreshStorageInfo();
@@ -2678,6 +2822,7 @@ async function exportBackup() {
     const payload = {
       settings: {
         customPrompt: settings.customPrompt,
+        richStyle: settings.richStyle,
         masterId: settings.masterId,
         masterEnabled: settings.masterEnabled,
         viewMode: settings.viewMode,
@@ -2690,6 +2835,7 @@ async function exportBackup() {
       },
       // legacy top-level fields kept for backward-compat with older backups
       customPrompt: settings.customPrompt,
+      richStyle: settings.richStyle,
       models: settings.models,
       chats: chatsData,
     };
@@ -2766,7 +2912,7 @@ async function importBackup(e) {
         const next = { ...settings };
         if (snap) {
           // copy every known setting field that's present
-          for (const k of ['customPrompt', 'masterId', 'masterEnabled', 'viewMode',
+          for (const k of ['customPrompt', 'richStyle', 'masterId', 'masterEnabled', 'viewMode',
                             'webSearchEnabled', 'showCost', 'autoLockMinutes', 'models', 'usage', 'prompts']) {
             if (snap[k] !== undefined) next[k] = snap[k];
           }
@@ -2789,6 +2935,8 @@ async function importBackup(e) {
     renderChatList();
     renderModelSettings();
     $('#customPrompt').value = settings.customPrompt;
+    const richEl = $('#richStyleToggle');
+    if (richEl) richEl.checked = settings.richStyle !== false;
     if (session.mode === 'online' && (n || settingsRestored)) scheduleSync();
     const parts = [];
     if (n) parts.push(`채팅 ${n}개`);

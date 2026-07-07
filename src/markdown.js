@@ -123,6 +123,45 @@ export function renderMarkdown(src) {
       continue;
     }
 
+    // Markdown table (GFM style): header | ... | then separator |---|... then rows
+    // Works on the already-escaped lines. Cells get inline() applied.
+    const isTableHeader = /\|/.test(line);
+    const nextLine = (i + 1 < lines.length) ? lines[i + 1] : '';
+    const isTableSep = /^\s*\|?\s*[:\-]+\s*\|?/.test(nextLine) && /\|/.test(nextLine);
+    if (isTableHeader && isTableSep) {
+      closeList();
+      // collect header
+      const headerCells = line.split('|').map(c => c.trim()).filter((c, idx, arr) => !(idx === 0 && !arr[0]) && !(idx === arr.length-1 && !c));
+      let j = i + 2;
+      const rows = [];
+      while (j < lines.length) {
+        const r = lines[j];
+        if (!/\|/.test(r) || /^\s*$/.test(r)) break;
+        // skip if looks like another sep or heading etc. rough guard
+        if (/^\s*\|?\s*[:\-]+\s*\|?\s*$/.test(r)) { j++; continue; }
+        const cells = r.split('|').map(c => c.trim()).filter((c, idx, arr) => !(idx === 0 && !arr[0]) && !(idx === arr.length-1 && !c));
+        if (cells.length) rows.push(cells);
+        j++;
+      }
+      // build table html (cells already escaped by top-level escapeHtml)
+      let t = '<table><thead><tr>';
+      for (const cell of headerCells) t += `<th>${inline(cell)}</th>`;
+      t += '</tr></thead>';
+      if (rows.length) {
+        t += '<tbody>';
+        for (const row of rows) {
+          t += '<tr>';
+          for (const cell of row) t += `<td>${inline(cell)}</td>`;
+          t += '</tr>';
+        }
+        t += '</tbody>';
+      }
+      t += '</table>';
+      html += t;
+      i = j;
+      continue;
+    }
+
     // headings
     const h = line.match(/^(#{1,3})\s+(.*)$/);
     if (h) {
@@ -167,7 +206,9 @@ export function renderMarkdown(src) {
     while (i < lines.length && !/^\s*$/.test(lines[i]) &&
            !/^```/.test(lines[i]) && !/^#{1,3}\s/.test(lines[i]) &&
            !/^\s*[-*+]\s+/.test(lines[i]) && !/^\s*\d+\.\s+/.test(lines[i]) &&
-           !/^&gt;\s?/.test(lines[i])) {
+           !/^&gt;\s?/.test(lines[i]) &&
+           // stop before table start too
+           ! ( /\|/.test(lines[i]) && (i+1 < lines.length) && /\|/.test(lines[i+1]) && /[:\-]/.test(lines[i+1]) )) {
       para += '\n' + lines[i];
       i++;
     }

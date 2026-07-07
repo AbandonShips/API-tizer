@@ -126,10 +126,10 @@ function wrapWrite(promise) {
 export async function createChat(user, key, title = '새 채팅') {
   const createdAt = Date.now();
   const id = uid();
-  const enc = await encryptJSON(key, { title, pinned: false, folder: '' });
+  const enc = await encryptJSON(key, { title, pinned: false, folder: '', chatPrompt: '', chatRichStyle: null });
   await wrapWrite(reqToPromise((await tx('chats', 'readwrite'))
     .add({ id, user, createdAt, updatedAt: createdAt, deleted: 0, dirty: 1, enc })));
-  return { id, title, createdAt, pinned: false, folder: '' };
+  return { id, title, createdAt, pinned: false, folder: '', chatPrompt: '', chatRichStyle: null };
 }
 
 export async function listChats(user, key) {
@@ -139,10 +139,10 @@ export async function listChats(user, key) {
   const out = [];
   for (const r of rows) {
     if (r.deleted) continue; // hide tombstones
-    let meta = { title: '(복호화 실패)', pinned: false, folder: '' };
-    try { meta = { pinned: false, folder: '', ...(await decryptJSON(key, r.enc)) }; }
+    let meta = { title: '(복호화 실패)', pinned: false, folder: '', chatPrompt: '', chatRichStyle: null };
+    try { meta = { pinned: false, folder: '', chatPrompt: '', chatRichStyle: null, ...(await decryptJSON(key, r.enc)) }; }
     catch { /* skip undecryptable */ }
-    out.push({ id: r.id, title: meta.title, pinned: !!meta.pinned, folder: meta.folder || '', createdAt: r.createdAt });
+    out.push({ id: r.id, title: meta.title, pinned: !!meta.pinned, folder: meta.folder || '', chatPrompt: meta.chatPrompt || '', chatRichStyle: (meta.chatRichStyle === true || meta.chatRichStyle === false) ? meta.chatRichStyle : null, createdAt: r.createdAt });
   }
   // pinned first, then most-recent
   return out.sort((a, b) => (b.pinned - a.pinned) || (b.createdAt - a.createdAt));
@@ -151,7 +151,11 @@ export async function listChats(user, key) {
 // Persist title + pinned + folder for a chat.
 export async function updateChatMeta(user, key, chat) {
   const enc = await encryptJSON(key, {
-    title: chat.title, pinned: !!chat.pinned, folder: chat.folder || '',
+    title: chat.title,
+    pinned: !!chat.pinned,
+    folder: chat.folder || '',
+    chatPrompt: chat.chatPrompt || '',
+    chatRichStyle: (chat.chatRichStyle === true || chat.chatRichStyle === false) ? chat.chatRichStyle : null,
   });
   await wrapWrite(reqToPromise((await tx('chats', 'readwrite'))
     .put({ id: chat.id, user, createdAt: chat.createdAt, updatedAt: Date.now(), deleted: 0, dirty: 1, enc })));

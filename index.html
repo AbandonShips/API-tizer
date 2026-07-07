@@ -91,6 +91,7 @@
           <div class="topbar-left">
             <button id="menuBtn" class="icon-round menu-btn" title="메뉴" aria-label="메뉴">☰</button>
             <h1 id="chatTitle"></h1>
+            <button id="chatInstructionsBtn" class="icon-round" title="이 채팅 전용 프롬프트 / 지침 (전역 프롬프트 무시, rich 서식 개별 제어)">📝</button>
           </div>
           <div class="topbar-right">
             <button id="layoutToggle" class="icon-round" title="PC / 모바일 레이아웃 전환">🖥️</button>
@@ -145,9 +146,9 @@
         <div class="modal-body">
           <section class="settings-block">
             <h3>개인 맞춤 (전역 시스템 프롬프트)
-              <span class="help-q" data-tip="여기에 적은 내용은 모든 대화·모든 모델에 시스템 프롬프트로 항상 함께 전송됩니다. 예: 직업, 답변 말투, 출력 형식. 새 채팅을 만들어도 잃지 않습니다.">?</span>
+              <span class="help-q" data-tip="여기에 적은 내용은 모든 대화·모든 모델에 시스템 프롬프트로 항상 함께 전송됩니다. 예: 직업, 답변 말투, 출력 형식. '풍부한 응답 서식' 토글(기본 ON)과 함께 쓰면 웹 구독 제품 스타일의 이모지/표/구조를 유지하면서 개인 규칙을 적용합니다. 새 채팅을 만들어도 잃지 않습니다.">?</span>
             </h3>
-            <p class="muted">모든 대화에 항상 함께 전송되는 나만의 기본 정보입니다. 직업·관심사·말투·답변 형식 등을 적어두면, 어느 채팅방에서든 AI가 이를 기억한 채로 답합니다.</p>
+            <p class="muted">모든 대화에 적용되는 기본 시스템 프롬프트입니다. 특정 채팅에서 '📝' 버튼으로 전용 프롬프트를 설정하면, 전역 프롬프트는 그 채팅에서 완전히 무시됩니다.</p>
             <textarea id="customPrompt" rows="4" placeholder="예) 나는 제품을 만드는 1인 개발자입니다. 답변은 한국어로, 결론을 먼저 말하고 근거는 간결한 불릿으로. 추상적인 원론보다 바로 실행 가능한 제안을 선호합니다."></textarea>
           </section>
 
@@ -169,6 +170,11 @@
             <label class="opt-row">
               <input type="checkbox" id="showCostToggle" />
               <span>답변에 토큰·비용 추정 표시</span>
+            </label>
+            <label class="opt-row">
+              <input type="checkbox" id="richStyleToggle" />
+              <span>풍부한 응답 서식 (이모지·표·구조화된 답변)</span>
+              <span class="help-q" data-tip="체크하면 구독 제품에서 보던 이모지·마크다운 표·제목 구조가 API 호출에서도 잘 나옵니다. (기본 ON) 체크를 해제하면 간결한 텍스트 위주로 나옵니다.">?</span>
             </label>
           </section>
 
@@ -263,6 +269,8 @@
               <li><b>마스터 요약</b> — 지정한 모델이 모든 답을 하나로 정리하고 소수 의견을 덧붙입니다.</li>
               <li><b>🌐 웹 검색</b> — 지원 모델(ChatGPT·Claude·Gemini·Grok)이 실시간 검색 후 출처를 답니다.</li>
               <li><b>📚 프롬프트 라이브러리</b> — 자주 쓰는 프롬프트를 저장해 두고 입력창에 한 번에 넣습니다.</li>
+              <li><b>풍부한 응답 서식</b> — 설정에서 켜면(기본 ON) API 응답에 이모지·표·구조화를 유도합니다. 채팅 전용 프롬프트 설정 시에도 개별로 on/off 제어 가능합니다.</li>
+              <li><b>📝 채팅 전용 프롬프트</b> — 채팅 제목 옆 📝 버튼으로 해당 채팅에서만 적용되는 시스템 프롬프트를 설정할 수 있습니다. 전용 프롬프트가 있으면 전역 프롬프트(설정의 개인 맞춤)는 무시됩니다. 사이드바 목록에는 📝 배지로 표시됩니다.</li>
               <li><b>📌 고정 / 📁 폴더</b> — 채팅을 상단 고정하거나 폴더로 분류합니다.</li>
               <li><b>토큰·비용</b> — 답변 헤더에 추정 토큰 수와 대략적 비용을 표시합니다(설정에서 끄기 가능).</li>
               <li><b>출처 [n]</b> — 본문의 각주 번호를 클릭하면 해당 출처가 새 탭으로 열립니다.</li>
@@ -284,6 +292,31 @@
         </div>
         <div class="modal-foot">
           <button class="btn btn-primary" data-help-close>닫기</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Per-chat instructions modal -->
+    <div id="chatInstructionsModal" class="modal" hidden>
+      <div class="modal-backdrop" data-chat-instr-close></div>
+      <div class="modal-card">
+        <div class="modal-head">
+          <h2>📝 이 채팅 전용 지침</h2>
+          <button class="icon-btn" data-chat-instr-close>✕</button>
+        </div>
+        <div class="modal-body">
+          <p class="muted">이 채팅에서만 적용되는 시스템 프롬프트입니다. 기존 전역 프롬프트를 대체합니다.</p>
+          <textarea id="chatInstructionsInput" rows="5" placeholder="예) 이번에는 캐주얼하고 간단하게 답해. 전문 용어 피하고, 재미있게."></textarea>
+
+          <label class="opt-row" style="margin-top:12px;">
+            <input type="checkbox" id="chatRichStyleToggle" />
+            <span>이 채팅에서 풍부한 응답 서식 (이모지·표·구조화) 사용</span>
+          </label>
+          <p class="muted" style="font-size:11px;">체크하면 이모지·표·구조 등을 사용하여 응답합니다.</p>
+        </div>
+        <div class="modal-foot">
+          <button class="btn btn-ghost" data-chat-instr-close>취소</button>
+          <button id="chatInstructionsSaveBtn" class="btn btn-primary">저장</button>
         </div>
       </div>
     </div>

@@ -49,6 +49,7 @@ export function modelPresetFor(type, modelName) {
 export function defaultSettings() {
   return {
     customPrompt: '',
+    richStyle: true,         // inject rich formatting instruction (emojis, tables, structure) so API responses feel closer to web ChatGPT
     masterId: 'openai',
     masterEnabled: false,
     viewMode: 'split', // 'split' | 'unified'
