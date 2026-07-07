@@ -256,7 +256,10 @@ function onGlobalKeydown(e) {
     e.preventDefault();
     newChat();
   } else if (e.key === 'Escape') {
-    if (!$('#helpModal').hidden) closeHelp();
+    const masterSel = document.getElementById('master-select-modal');
+    if (masterSel) { masterSel.remove(); }
+    else if (!$('#chatInstructionsModal').hidden) closeChatInstructions();
+    else if (!$('#helpModal').hidden) closeHelp();
     else if (!$('#promptModal').hidden) closePromptModal();
     else if (!$('#pwModal').hidden) closePwModal();
     else if (!settingsModal.hidden) closeSettings();
@@ -1723,7 +1726,10 @@ function modelProgressLabel(resp) {
   if (!resp || resp.status === 'pending') return '서버 응답 대기 중';
   if (resp.status === 'streaming') return '응답 중';
   if (resp.status === 'done') return '응답 완료';
-  if (resp.status === 'error') return resp.error === '중단됨' ? '응답 중단됨' : '오류';
+  if (resp.status === 'error') {
+    if (resp.error && resp.error.includes('타임아웃')) return '타임아웃';
+    return resp.error === '중단됨' ? '응답 중단됨' : '오류';
+  }
   return '대기 중';
 }
 
@@ -1752,6 +1758,22 @@ function renderMasterProgress(body, turn) {
   }
   body.textContent = '';
   body.appendChild(wrap);
+
+  // 진행 중이고 일부 모델이라도 완료됐다면, 강제 요약 버튼 제공
+  const completed = models.filter((m) => {
+    const r = turn.responses?.[m.id];
+    return r && r.status === 'done' && r.text;
+  });
+  const canForceMaster = (turn.master && (turn.master.status === 'pending' || turn.master.status === 'error')) && completed.length > 0;
+  if (canForceMaster) {
+    const btnText = turn.master.status === 'error' ? '요약 다시 실행 (모델 선택)' : '지금까지 응답으로 요약 실행';
+    const forceBtn = h('button', {
+      class: 'btn btn-sm',
+      style: 'margin-top: 8px; font-size: 12px; width: 100%;',
+      onclick: (e) => { e.stopPropagation(); triggerEarlyMaster(turn); }
+    }, btnText);
+    body.appendChild(forceBtn);
+  }
 }
 
 function masterProgressText(turn) {
@@ -1760,6 +1782,72 @@ function masterProgressText(turn) {
   const models = turnModels(turn);
   if (!models.length) return '서브 에이전트 응답 대기 중…';
   return models.map((m) => `${m.label} - ${modelProgressLabel(turn.responses?.[m.id])}`).join('\n');
+}
+
+function triggerEarlyMaster(turn) {
+  if (!turn.masterEnabled || !turn.master || (turn.master.status !== 'pending' && turn.master.status !== 'error')) return;
+  const master = settings.models.find((m) => m.id === turn.masterId) || turn.models?.[turn.masterId];
+  if (!master) return;
+  const completed = turnModels(turn).filter((m) => {
+    const r = turn.responses?.[m.id];
+    return r && r.status === 'done' && r.text;
+  });
+  if (completed.length === 0) {
+    alert('아직 응답 완료된 모델이 없습니다.');
+    return;
+  }
+  showMasterModelSelector(turn, master, completed, async (sel) => {
+    if (sel.length === 0) return;
+    const sig = activeController ? activeController.signal : new AbortController().signal;
+    await runMaster(turn, master, sel, sig);
+    await updateTurn(session.key, turn, session.id);
+  });
+}
+
+function showMasterModelSelector(turn, master, candidates, onConfirm) {
+  const existing = document.getElementById('master-select-modal');
+  if (existing) existing.remove();
+
+  const modal = h('div', { id: 'master-select-modal', class: 'modal' });
+  const backdrop = h('div', { class: 'modal-backdrop', onclick: () => modal.remove() });
+  modal.appendChild(backdrop);
+
+  const card = h('div', { class: 'modal-card' });
+  card.appendChild(h('div', { class: 'modal-head' }, [
+    h('h2', { text: '요약에 사용할 모델 선택' }),
+    h('button', { class: 'icon-btn', onclick: () => modal.remove() }, '✕')
+  ]));
+
+  const bodyEl = h('div', { class: 'modal-body' });
+  const checks = {};
+  candidates.forEach((m) => {
+    const r = turn.responses?.[m.id];
+    const row = h('label', { class: 'opt-row' }, [
+      h('input', { type: 'checkbox', checked: true }),
+      h('span', { text: `${m.label} (${modelProgressLabel(r)})` })
+    ]);
+    checks[m.id] = row.querySelector('input');
+    bodyEl.appendChild(row);
+  });
+
+  const note = h('p', { class: 'muted', style: 'margin-bottom:8px; font-size:12px;' }, '현재까지 응답 완료된 모델만 선택할 수 있습니다. 선택한 모델들의 답변으로 마스터 요약을 생성합니다.');
+  bodyEl.insertBefore(note, bodyEl.firstChild);
+  card.appendChild(bodyEl);
+
+  card.appendChild(h('div', { class: 'modal-foot' }, [
+    h('button', { class: 'btn btn-ghost', onclick: () => modal.remove() }, '취소'),
+    h('button', {
+      class: 'btn btn-primary',
+      onclick: () => {
+        const sel = candidates.filter((m) => checks[m.id].checked);
+        modal.remove();
+        if (sel.length > 0) onConfirm(sel);
+      }
+    }, '요약 실행')
+  ]));
+
+  modal.appendChild(card);
+  document.body.appendChild(modal);
 }
 
 // ---- Citations ----
@@ -2015,15 +2103,42 @@ async function send() {
   await Promise.allSettled(active.map((m) => runModel(turn, m, signal)));
 
   // Master aggregation after all answers
+  let didEarlyMaster = false;
   if (masterEnabled && !signal.aborted) {
-    await runMaster(turn, masterModel, active, signal);
+    if (turn.master && turn.master.status === 'done') {
+      // 이미 마스터가 완료된 상태에서는 추가 팝업 없이 넘어감
+    } else {
+      const completed = turnModels(turn).filter((m) => {
+        const r = turn.responses[m.id];
+        return r && r.status === 'done' && r.text;
+      });
+      if (completed.length === 0) {
+        turn.master.status = 'error';
+        turn.master.error = '완료된 모델이 없습니다.';
+        refreshCard(turn, 'master', turn.master);
+      } else if (completed.length === active.length) {
+        await runMaster(turn, masterModel, active, signal);
+      } else {
+        didEarlyMaster = true;
+        // 먼저 현재 모델 상태 저장
+        await updateTurn(session.key, turn, session.id);
+        showMasterModelSelector(turn, masterModel, completed, async (sel) => {
+          if (sel.length > 0) {
+            await runMaster(turn, masterModel, sel, signal);
+            await updateTurn(session.key, turn, session.id);
+          }
+        });
+      }
+    }
   } else if (masterEnabled && signal.aborted && turn.master?.status === 'pending') {
     turn.master.status = 'error';
     turn.master.error = '중단됨';
     refreshCard(turn, 'master', turn.master);
   }
 
-  await updateTurn(session.key, turn, session.id);
+  if (!didEarlyMaster && (!turn.master || turn.master.status !== 'done')) {
+    await updateTurn(session.key, turn, session.id);
+  }
   setSending(false);
   activeController = null;
   scheduleSync();
@@ -2051,46 +2166,127 @@ async function runModel(turn, model, signal) {
   refreshCard(turn, model.id, resp);
   refreshMasterProgress(turn);
 
+  // 모델 응답 타임아웃
+  const t = settings.timeoutMs;
+  const timeoutMs = t > 0 ? t : 0;
+  let responseTimeout = null;
+  if (timeoutMs > 0) {
+    responseTimeout = setTimeout(() => {
+      if (resp.status === 'streaming' && !resp.text) {
+        resp.status = 'error';
+        resp.error = `${Math.round(timeoutMs / 1000)}초 타임아웃`;
+        refreshCard(turn, model.id, resp);
+        refreshMasterProgress(turn);
+        updateTurn(session.key, turn, session.id).catch(() => {});
+      }
+    }, timeoutMs);
+  }
+
   try {
     const messages = buildHistory(model, turn);
     resp.promptTokens = estimateTokens(messages.map((m) => m.content || '').join('\n'));
     const useSearch = !!turn.webSearch && supportsWebSearch(model);
-    const full = await streamChat(model, messages, {
+
+    const streamP = streamChat(model, messages, {
       signal,
       webSearch: useSearch,
-      // Local LLMs don't have a real web-search/citation source, so never
-      // attach a sources block for them (avoids odd/garbage citations).
       onCitations: model.type === 'local' ? undefined : (urls) => { resp.citations = urls; },
       onChunk: (_chunk, fullText) => {
+        if (resp.status !== 'streaming') return;
+        if (responseTimeout) {
+          clearTimeout(responseTimeout);
+          responseTimeout = null;
+        }
         resp.text = fullText;
         const b = document.getElementById(`body-${turn.id}-${model.id}`);
         if (b) { b.classList.add('streaming'); renderResponseHtml(b, fullText); }
         refreshMasterProgress(turn);
       },
     });
-    resp.text = full;
-    resp.status = 'done';
+
+    // Wrap streamP so we *always* settle promptly (unblocks send/allSettled) and reliably set 'done' on success.
+    // The separate timeoutP below unblocks even on complete hangs. Late-finishing streams after timeout will
+    // still flip to 'done' and persist the final text (onChunk already updated live text).
+    const wrapped = new Promise((resolve) => {
+      streamP.then((full) => {
+        if (responseTimeout) {
+          clearTimeout(responseTimeout);
+          responseTimeout = null;
+        }
+        if (resp.status === 'streaming') {
+          resp.status = 'done';
+          resp.text = full;
+        }
+        // Update final stats + persist terminal state here (covers late completion after unblock timeout).
+        // Usage is handled in the post-await block below (added once with prompt+text-at-unblock for timeout cases).
+        resp.elapsedMs = performance.now() - startedAt;
+        resp.completionTokens = estimateTokens(resp.text || '');
+        refreshCard(turn, model.id, resp);
+        refreshMasterProgress(turn);
+        if (resp.status === 'done' || resp.status === 'error') {
+          updateTurn(session.key, turn, session.id).catch(() => {});
+        }
+        resolve();
+      }).catch((err) => {
+        if (responseTimeout) {
+          clearTimeout(responseTimeout);
+          responseTimeout = null;
+        }
+        if (signal.aborted) { resp.status = resp.text ? 'done' : 'error'; resp.error = '중단됨'; }
+        else { resp.status = 'error'; resp.error = String(err.message || err); }
+        resolve();
+      });
+    });
+
+    // Race to unblock caller for early/partial master even if a stream hangs forever.
+    const timeoutP = timeoutMs > 0 ? new Promise(r => setTimeout(r, timeoutMs)) : Promise.resolve();
+    await Promise.race([wrapped, timeoutP]);
+
+    if (responseTimeout) {
+      clearTimeout(responseTimeout);
+      responseTimeout = null;
+    }
   } catch (err) {
+    if (responseTimeout) {
+      clearTimeout(responseTimeout);
+      responseTimeout = null;
+    }
     if (signal.aborted) { resp.status = resp.text ? 'done' : 'error'; resp.error = '중단됨'; }
     else { resp.status = 'error'; resp.error = String(err.message || err); }
+  } finally {
+    if (responseTimeout) {
+      clearTimeout(responseTimeout);
+      responseTimeout = null;
+    }
   }
   resp.elapsedMs = performance.now() - startedAt;
   resp.completionTokens = estimateTokens(resp.text || '');
   // Accumulate monthly usage (cloud models only; local is free).
-  if (resp.status === 'done' && model.type !== 'local') {
+  // Count even on error/timeout, as prompt + any partial output was consumed.
+  if (model.type !== 'local' && (resp.promptTokens != null || resp.completionTokens > 0)) {
     addUsage(settings, model.id, model, resp.promptTokens || 0, resp.completionTokens || 0);
     persistSettings();
     renderUsage();
   }
   refreshCard(turn, model.id, resp);
   refreshMasterProgress(turn);
+
+  // Ensure terminal states (done/error/timeout) are persisted promptly.
+  // This is important for early summary and when some models timeout.
+  if (resp.status === 'done' || resp.status === 'error') {
+    updateTurn(session.key, turn, session.id).catch(() => {});
+  }
 }
 
-async function runMaster(turn, master, active, signal) {
+async function runMaster(turn, master, modelsForBlock, signal) {
   if (!turn.master) turn.master = { status: 'pending', text: '' };
   if (master.type !== 'local' && !master.apiKey) {
     turn.master = { status: 'error', error: '마스터 모델 API 키가 없습니다.', text: '' };
     refreshCard(turn, 'master', turn.master);
+    return;
+  }
+  if (turn.master.status === 'streaming' || turn.master.status === 'collecting') {
+    // Already running a master; ignore duplicate/early re-call (e.g. race between timeout and post-send).
     return;
   }
   turn.master.status = 'collecting';
@@ -2105,9 +2301,42 @@ async function runMaster(turn, master, active, signal) {
   const startedAt = performance.now();
   refreshCard(turn, 'master', turn.master);
 
-  // Build aggregation input from completed answers
+  // 마스터 요약 타임아웃
+  const t = settings.timeoutMs;
+  const timeoutMs = t > 0 ? t : 0;
+  let masterTimeout = null;
+  if (timeoutMs > 0) {
+    masterTimeout = setTimeout(() => {
+      if (turn.master.status === 'streaming' && !turn.master.text) {
+        turn.master.status = 'error';
+        turn.master.error = `${Math.round(timeoutMs / 1000)}초 타임아웃`;
+        refreshCard(turn, 'master', turn.master);
+        updateTurn(session.key, turn, session.id).catch(() => {});
+
+        // 마스터 타임아웃 시 자동으로 완료된 모델 선택 팝업 표시
+        const completed = turnModels(turn).filter((m) => {
+          const r = turn.responses?.[m.id];
+          return r && r.status === 'done' && r.text;
+        });
+        if (completed.length > 0) {
+          const mst = settings.models.find((m) => m.id === turn.masterId) || turn.models?.[turn.masterId];
+          if (mst) {
+            showMasterModelSelector(turn, mst, completed, async (sel) => {
+              if (sel.length > 0) {
+                const sig = activeController ? activeController.signal : new AbortController().signal;
+                await runMaster(turn, mst, sel, sig);
+                await updateTurn(session.key, turn, session.id);
+              }
+            });
+          }
+        }
+      }
+    }, timeoutMs);
+  }
+
+  // Build aggregation input from completed answers (can be partial selected)
   let block = `[질문]\n${turn.user}\n\n[각 모델의 답변]\n`;
-  for (const m of active) {
+  for (const m of modelsForBlock) {
     const r = turn.responses[m.id];
     if (r && r.status === 'done' && r.text) {
       block += `\n### ${m.label}\n${r.text}\n`;
@@ -2147,28 +2376,73 @@ async function runMaster(turn, master, active, signal) {
   turn.master.promptTokens = estimateTokens(messages.map((m) => m.content).join('\n'));
 
   try {
-    const full = await streamChat(master, messages, {
-      signal,
-      onChunk: (_c, fullText) => {
-        turn.master.text = fullText;
-        const b = document.getElementById(`body-${turn.id}-master`);
-        if (b) { b.classList.add('streaming'); renderResponseHtml(b, fullText); }
-      },
+    // Wrap to ensure promise settles promptly even if stream hangs.
+    // Race with timeoutP so runMaster await unblocks on hang (important when called with await from send's full path).
+    const wrapped = new Promise((resolve) => {
+      const streamP = streamChat(master, messages, {
+        signal,
+        onChunk: (_c, fullText) => {
+          if (turn.master.status !== 'streaming') return;
+          if (masterTimeout) {
+            clearTimeout(masterTimeout);
+            masterTimeout = null;
+          }
+          turn.master.text = fullText;
+          const b = document.getElementById(`body-${turn.id}-master`);
+          if (b) { b.classList.add('streaming'); renderResponseHtml(b, fullText); }
+        },
+      });
+
+      streamP.then((full) => {
+        if (masterTimeout) {
+          clearTimeout(masterTimeout);
+          masterTimeout = null;
+        }
+        if (turn.master.status === 'streaming') {
+          turn.master.text = full;
+          turn.master.status = 'done';
+        }
+        resolve();
+      }).catch((err) => {
+        if (masterTimeout) {
+          clearTimeout(masterTimeout);
+          masterTimeout = null;
+        }
+        if (signal.aborted) { turn.master.status = turn.master.text ? 'done' : 'error'; turn.master.error = '중단됨'; }
+        else { turn.master.status = 'error'; turn.master.error = String(err.message || err); }
+        resolve();
+      });
     });
-    turn.master.text = full;
-    turn.master.status = 'done';
+
+    const timeoutP = timeoutMs > 0 ? new Promise(r => setTimeout(r, timeoutMs)) : Promise.resolve();
+    await Promise.race([wrapped, timeoutP]);
   } catch (err) {
+    if (masterTimeout) {
+      clearTimeout(masterTimeout);
+      masterTimeout = null;
+    }
     if (signal.aborted) { turn.master.status = turn.master.text ? 'done' : 'error'; turn.master.error = '중단됨'; }
     else { turn.master.status = 'error'; turn.master.error = String(err.message || err); }
+  } finally {
+    if (masterTimeout) {
+      clearTimeout(masterTimeout);
+      masterTimeout = null;
+    }
   }
   turn.master.elapsedMs = performance.now() - startedAt;
   turn.master.completionTokens = estimateTokens(turn.master.text || '');
-  if (turn.master.status === 'done' && master.type !== 'local') {
+  // Accumulate for master too, even on error (prompt + partial consumed).
+  if (master.type !== 'local' && (turn.master.promptTokens != null || turn.master.completionTokens > 0)) {
     addUsage(settings, master.id, master, turn.master.promptTokens || 0, turn.master.completionTokens || 0);
     persistSettings();
     renderUsage();
   }
   refreshCard(turn, 'master', turn.master);
+
+  // Ensure terminal states for master are persisted (for early/timeout cases).
+  if (turn.master.status === 'done' || turn.master.status === 'error') {
+    updateTurn(session.key, turn, session.id).catch(() => {});
+  }
 }
 
 function setSending(on) {
@@ -2289,6 +2563,8 @@ function openSettings() {
   $('#showCostToggle').checked = settings.showCost !== false;
   const richEl = $('#richStyleToggle');
   if (richEl) richEl.checked = settings.richStyle !== false;
+  const timeoutInput = $('#timeoutInput');
+  if (timeoutInput) timeoutInput.value = Math.round((settings.timeoutMs || 60000) / 1000);
   $('#resetUserLabel').textContent = session ? `'${session.displayName}'` : '현재 사용자';
   renderModelSettings();
   refreshStorageInfo();
@@ -2555,6 +2831,11 @@ function saveSettingsFromForm() {
   settings.showCost = $('#showCostToggle').checked;
   const richEl = $('#richStyleToggle');
   if (richEl) settings.richStyle = richEl.checked;
+  const timeoutInput = $('#timeoutInput');
+  if (timeoutInput) {
+    const secs = parseInt(timeoutInput.value, 10);
+    settings.timeoutMs = Number.isFinite(secs) && secs >= 0 ? secs * 1000 : 60000;
+  }
   readModelForm();
   persistSettings();
   masterToggle.checked = settings.masterEnabled;
@@ -2604,6 +2885,8 @@ async function resetEverything() {
   $('#customPrompt').value = settings.customPrompt;
   const richEl = $('#richStyleToggle');
   if (richEl) richEl.checked = settings.richStyle !== false;
+  const timeoutInput = $('#timeoutInput');
+  if (timeoutInput) timeoutInput.value = Math.round((settings.timeoutMs || 60000) / 1000);
   renderModelSettings();
   refreshStorageInfo();
   $('#saveHint').textContent = '초기화 완료 ✓';
@@ -2823,6 +3106,7 @@ async function exportBackup() {
       settings: {
         customPrompt: settings.customPrompt,
         richStyle: settings.richStyle,
+        timeoutMs: settings.timeoutMs,
         masterId: settings.masterId,
         masterEnabled: settings.masterEnabled,
         viewMode: settings.viewMode,
@@ -2836,6 +3120,7 @@ async function exportBackup() {
       // legacy top-level fields kept for backward-compat with older backups
       customPrompt: settings.customPrompt,
       richStyle: settings.richStyle,
+      timeoutMs: settings.timeoutMs,
       models: settings.models,
       chats: chatsData,
     };
@@ -2912,7 +3197,7 @@ async function importBackup(e) {
         const next = { ...settings };
         if (snap) {
           // copy every known setting field that's present
-          for (const k of ['customPrompt', 'richStyle', 'masterId', 'masterEnabled', 'viewMode',
+          for (const k of ['customPrompt', 'richStyle', 'timeoutMs', 'masterId', 'masterEnabled', 'viewMode',
                             'webSearchEnabled', 'showCost', 'autoLockMinutes', 'models', 'usage', 'prompts']) {
             if (snap[k] !== undefined) next[k] = snap[k];
           }
@@ -2937,6 +3222,8 @@ async function importBackup(e) {
     $('#customPrompt').value = settings.customPrompt;
     const richEl = $('#richStyleToggle');
     if (richEl) richEl.checked = settings.richStyle !== false;
+    const timeoutInput = $('#timeoutInput');
+    if (timeoutInput) timeoutInput.value = Math.round((settings.timeoutMs || 60000) / 1000);
     if (session.mode === 'online' && (n || settingsRestored)) scheduleSync();
     const parts = [];
     if (n) parts.push(`채팅 ${n}개`);

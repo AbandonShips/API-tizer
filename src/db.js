@@ -370,6 +370,8 @@ export async function importUserData(user, key, chatsArray) {
     const newChatId = uid();
     const enc = await encryptJSON(key, {
       title: c.title || '가져온 채팅', pinned: !!c.pinned, folder: c.folder || '',
+      chatPrompt: c.chatPrompt || '',
+      chatRichStyle: (c.chatRichStyle === true || c.chatRichStyle === false) ? c.chatRichStyle : null,
     });
     const now = Date.now();
     await wrapWrite(reqToPromise((await tx('chats', 'readwrite'))

@@ -185,7 +185,7 @@ body.theme-light button.brand:hover span { color: var(--accent); }
   height: 60px; border-bottom: 1px solid var(--border); padding: 0 18px;
   display: flex; align-items: center; justify-content: space-between; background: var(--bg-2);
 }
-#chatTitle { font-size: 15px; margin: 0; font-weight: 600; }
+#chatTitle { font-size: 15px; margin: 0; font-weight: 600; flex: 1 1 auto; min-width: 0; }
 .topbar-left { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .topbar-right { display: flex; align-items: center; gap: 16px; }
 
@@ -480,10 +480,22 @@ textarea#customPrompt {
 .backup-pass-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 10px 0; }
 .backup-pass-grid #backupImportPass { grid-column: 1 / -1; }
 .num-input {
-  width: 120px; background: var(--bg); color: var(--text); border: 1px solid var(--border);
+  width: 140px; min-width: 110px; flex-shrink: 0;
+  background: var(--bg); color: var(--text); border: 1px solid var(--border);
   border-radius: 8px; padding: 8px 10px; font-family: inherit; font-size: 13px; outline: none;
+  text-align: center;
 }
 .num-input:focus { border-color: var(--accent); }
+
+/* Remove ugly spinner arrows on number inputs so the typed value is clearly visible */
+.num-input::-webkit-inner-spin-button,
+.num-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.num-input {
+  -moz-appearance: textfield;
+}
 .pw-card { width: min(420px, 92vw); }
 .pw-card .modal-body { gap: 14px; }
 
@@ -619,7 +631,7 @@ body.is-mobile #app.drawer-open #sidebarBackdrop { display: block; opacity: 1; p
 
 body.is-mobile .menu-btn { display: inline-flex; }
 body.is-mobile .topbar-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
-body.is-mobile #chatTitle { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+body.is-mobile #chatTitle { font-size: 14px; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* topbar wraps so controls never overflow */
 body.is-mobile #topbar { height: auto; min-height: 56px; padding: 8px 12px; flex-wrap: wrap; gap: 8px; }
@@ -649,6 +661,11 @@ body.is-mobile .modal { align-items: stretch; justify-content: stretch; padding:
 body.is-mobile .modal-card { width: 100%; max-width: none; max-height: none; min-width: 0; border-radius: 12px; }
 body.is-mobile .modal-head { padding-top: 14px; }
 body.is-mobile .modal-body { padding-left: 14px; padding-right: 14px; overflow-x: hidden; }
+body.is-mobile .num-input {
+  width: 110px;
+  min-width: 90px;
+  font-size: 14px;
+}
 body.is-mobile .modal-foot { padding-left: 14px; padding-right: 14px; }
 body.is-mobile .model-grid { grid-template-columns: 1fr; }
 

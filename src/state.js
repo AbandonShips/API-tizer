@@ -50,6 +50,7 @@ export function defaultSettings() {
   return {
     customPrompt: '',
     richStyle: true,         // inject rich formatting instruction (emojis, tables, structure) so API responses feel closer to web ChatGPT
+    timeoutMs: 60000,        // timeout for individual model responses and master summary (in ms). 0 or falsy to disable.
     masterId: 'openai',
     masterEnabled: false,
     viewMode: 'split', // 'split' | 'unified'
