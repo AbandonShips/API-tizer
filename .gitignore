@@ -9,6 +9,7 @@
 *.pfx
 secrets/
 private/
+AGENTS.md
 
 # API-Tizer encrypted backups still contain API keys if the password is guessed
 apitizer-backup-*.json

@@ -2,10 +2,10 @@
 // each user's settings with their password-derived key (see crypto.js).
 
 export const MODEL_META = {
-  openai: { label: 'ChatGPT', color: 'var(--openai)' },
-  anthropic: { label: 'Claude', color: 'var(--claude)' },
-  gemini: { label: 'Gemini', color: 'var(--gemini)' },
-  grok: { label: 'Grok', color: 'var(--grok)' },
+  openai: { label: 'ChatGPT', color: 'var(--openai)', apiConsoleUrl: 'https://platform.openai.com/api-keys' },
+  anthropic: { label: 'Claude', color: 'var(--claude)', apiConsoleUrl: 'https://console.anthropic.com/settings/keys' },
+  gemini: { label: 'Gemini', color: 'var(--gemini)', apiConsoleUrl: 'https://aistudio.google.com/app/apikey' },
+  grok: { label: 'Grok', color: 'var(--grok)', apiConsoleUrl: 'https://console.x.ai/' },
   local: { label: '로컬', color: 'var(--local)' },
 };
 

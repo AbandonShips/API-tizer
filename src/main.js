@@ -2676,6 +2676,15 @@ function modelSettingRow(m) {
     h('div', { class: 'model-row-head' }, [
       h('span', { class: 'badge', style: `background:${meta.color}` }),
       h('span', { class: 'name', text: m.label }),
+      meta.apiConsoleUrl
+        ? h('a', {
+            href: meta.apiConsoleUrl,
+            target: '_blank',
+            rel: 'noopener noreferrer',
+            class: 'api-link',
+            'data-tip': `${meta.label} API 키 발급/관리 페이지로 이동`,
+          }, '↗')
+        : null,
       h('span', { class: 'spacer' }),
       h('label', { class: 'master-radio' }, [
         h('input', { type: 'radio', name: 'master', value: m.id, ...(settings.masterId === m.id ? { checked: 'checked' } : {}) }),

@@ -55,6 +55,11 @@ body {
   display: flex; align-items: center; justify-content: center; padding: 20px;
   background: radial-gradient(1200px 600px at 50% -10%, #1a2440 0%, var(--bg) 60%);
 }
+
+/* Light theme: softer gradient for auth screen */
+body.theme-light .auth-screen {
+  background: radial-gradient(1200px 600px at 50% -10%, #e8eef7 0%, var(--bg) 60%);
+}
 .auth-screen[hidden] { display: none; }
 .auth-card {
   width: min(380px, 92vw); background: var(--bg-2); border: 1px solid var(--border);
@@ -352,6 +357,11 @@ body.theme-light button.brand:hover span { color: var(--accent); }
 .bubble-attachments img { width: 120px; max-height: 120px; object-fit: cover; border-radius: 8px; cursor: pointer; }
 .bubble-file { display: inline-flex; align-items: center; gap: 6px; background: rgba(0,0,0,0.18); border-radius: 8px; padding: 5px 9px; font-size: 12px; }
 
+/* Light theme: lighter tint inside user bubble for file attachments */
+body.theme-light .bubble-file {
+  background: rgba(0, 0, 0, 0.08);
+}
+
 .link-previews { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; margin-top: 12px; max-width: 520px; }
 .link-previews a { display: block; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--bg); aspect-ratio: 4 / 3; }
 .link-previews img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -448,11 +458,47 @@ textarea#customPrompt {
   border-radius: 10px; padding: 12px; font-family: inherit; font-size: 13.5px; resize: vertical;
 }
 
+/* Per-chat instructions textarea — must explicitly use theme vars for dark mode */
+textarea#chatInstructionsInput {
+  width: 100%;
+  background: var(--bg-3);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  font-family: inherit;
+  font-size: 13.5px;
+  resize: vertical;
+  outline: none;
+}
+textarea#chatInstructionsInput:focus {
+  border-color: var(--accent);
+}
+
 /* model setting rows */
 .model-row { background: var(--bg-3); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; }
 .model-row-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .model-row-head .badge { width: 9px; height: 9px; border-radius: 50%; }
 .model-row-head .name { font-weight: 600; }
+.model-row-head .api-link {
+  font-size: 12px;
+  color: var(--muted);
+  text-decoration: none;
+  opacity: 0.7;
+  line-height: 1;
+  margin-left: -4px;
+  padding: 2px 4px; /* 클릭 영역 확대 */
+  border-radius: 3px;
+}
+.model-row-head .api-link:hover {
+  color: var(--accent);
+  opacity: 1;
+}
+body.is-mobile .model-row-head .api-link {
+  font-size: 11px;
+  margin-left: -2px;
+  padding: 1px 3px;
+}
 .model-row-head .spacer { flex: 1; }
 .master-radio { white-space: nowrap; }
 .model-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -530,6 +576,11 @@ textarea#customPrompt {
   color: var(--accent);
   background: rgba(108, 140, 255, 0.12);
   position: relative;
+}
+
+/* Light theme override for has-custom highlight (uses light accent) */
+body.theme-light .icon-round.has-custom {
+  background: rgba(63, 99, 224, 0.12);
 }
 
 .icon-round.has-custom::after {
@@ -630,8 +681,21 @@ body.is-mobile #sidebarBackdrop {
 body.is-mobile #app.drawer-open #sidebarBackdrop { display: block; opacity: 1; pointer-events: auto; }
 
 body.is-mobile .menu-btn { display: inline-flex; }
-body.is-mobile .topbar-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
-body.is-mobile #chatTitle { font-size: 14px; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+body.is-mobile .topbar-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+body.is-mobile #chatTitle {
+  font-size: 14px;
+  flex: 1 1 auto;
+  max-width: calc(100% - 75px); /* menu + gaps + 📝 button 공간 확보 */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Ensure the 📝 per-chat instructions button is always visible next to title on mobile */
+body.is-mobile #chatInstructionsBtn {
+  flex-shrink: 0;
+  flex-grow: 0;
+}
 
 /* topbar wraps so controls never overflow */
 body.is-mobile #topbar { height: auto; min-height: 56px; padding: 8px 12px; flex-wrap: wrap; gap: 8px; }
