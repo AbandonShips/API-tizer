@@ -105,7 +105,9 @@ function responsesInput(messages) {
   for (const m of messages) {
     if (m.role === 'system') continue;
     const isUser = m.role !== 'assistant';
-    if (hasImages(m)) {
+    // Only user turns carry images in this app; assistant turns are always plain
+    // text. Guard on isUser so an assistant message is never mislabeled as user.
+    if (isUser && hasImages(m)) {
       const content = [];
       if (m.content) content.push({ type: 'input_text', text: m.content });
       for (const url of m.images) content.push({ type: 'input_image', image_url: url });
@@ -190,7 +192,7 @@ function anthropicContent(m) {
   return parts;
 }
 
-async function streamAnthropic(model, messages, { signal, onChunk, onCitations, webSearch }) {
+async function streamAnthropic(model, messages, { signal, onChunk, onCitations, webSearch, maxTokens }) {
   const base = (model.baseUrl || 'https://api.anthropic.com/v1').replace(/\/$/, '');
   const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n');
   const convo = messages
@@ -199,7 +201,7 @@ async function streamAnthropic(model, messages, { signal, onChunk, onCitations, 
 
   const body = {
     model: model.model,
-    max_tokens: 4096,
+    max_tokens: maxTokens && maxTokens > 0 ? maxTokens : 8192,
     ...(system ? { system } : {}),
     messages: convo,
     stream: true,

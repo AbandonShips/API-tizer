@@ -3,6 +3,7 @@ import {
   MODEL_PRESETS, modelPresetFor,
   localCount, makeLocalModel, enabledModels,
   estimateTokens, estimateCost, effectivePrice, addUsage, getUsage, resetUsage,
+  IMAGE_TOKEN_ESTIMATE,
 } from './state.js';
 import {
   createChat, listChats, updateChatMeta, deleteChat,
@@ -35,6 +36,37 @@ const RICH_STYLE_INSTRUCTION =
   '- 상황에 맞게 자연스럽게 이모지(✅ 📌 💡 ⚠️ 등)를 사용하세요. 이모지는 주로 제목이나 중요한 포인트 앞에 배치하는 것이 좋습니다.\n' +
   '- 핵심 내용은 **굵게**, 코드나 용어는 `인라인 코드`로 강조하세요.\n' +
   '- 전체적으로 친절하고 읽기 쉬우며 시각적으로 잘 정리된 스타일을 유지하세요.';
+
+// Platform core (L0) — always injected first. Not user-editable. Explains multi-model
+// continuity: official master synthesis vs this model's own prior answer.
+const CONTINUITY_INSTRUCTION =
+  '당신은 API-tizer의 여러 AI 중 하나입니다. 같은 질문에 여러 모델이 답하고, 필요할 때 마스터가 공식 종합을 만듭니다.\n' +
+  '이전 대화에 아래 두 블록이 함께 있을 수 있습니다.\n' +
+  '1) [이전 공식 종합] — 사용자가 읽고 이어가는 공통 기준. 후속 질문의 기본 전제로 우선하세요.\n' +
+  '2) [내가 그 턴에 제출한 개별 답] — 당신이 그때 쓴 원문. 관점·세부·이견·톤을 파악하는 참고용입니다.\n' +
+  '사용자가 공식 결론을 따르는 취지(예: 특정 옵션 선택)면 공식 종합을 우선하고, ' +
+  '이견·심화를 묻거나 유의미한 보완이 있으면 개별 답의 개성을 살려도 됩니다. ' +
+  '공식만 복창하거나 개별 소수 의견만 고집하지 마세요. 다른 모델의 원문은 주어지지 않습니다.';
+
+// Master editor instruction (L0 for runMaster).
+const MASTER_INSTRUCTION =
+  '당신은 여러 AI의 답변을 종합하는 편집자입니다. 목표는 매끄러운 하나의 답이 아니라, ' +
+  '여러 독립 모델의 교차 검증으로 신뢰도를 높이고 불확실성을 드러내는 것입니다. 아래 규칙을 지키세요.\n' +
+  '1) 여러 모델이 공통으로 말한 내용을 가장 신뢰도 높은 핵심으로 삼아 명확하고 충분히 자세한 최종 답변을 쓰세요. ' +
+  '중요 수치·코드·고유명사·선택지 정의는 생략하지 마세요.\n' +
+  '2) 모델 간 사실이 상충하면 임의로 하나를 고르지 말고 어느 모델이 무엇을 다르게 말했는지 그대로 드러내세요(예: "A는 X, B는 Y"). ' +
+  '한 모델만 주장하고 다른 모델엔 없는 내용은 "한 모델 주장"으로 구분해 신뢰 수준을 낮춰 표시하세요.\n' +
+  '3) 어떤 모델도 말하지 않은 새로운 사실을 지어내지 마세요. 답변들에 근거가 있는 내용만 쓰세요.\n' +
+  '입력에 [이전 공식 종합 — 참고]가 있으면 용어·선택지·이전 결론의 연속을 맞추는 데 참고하되, 주 재료는 이번 질문과 이번 답변입니다. ' +
+  '이전 종합을 고정하지 말고 필요하면 수정·갱신하세요.\n' +
+  "마지막에 '### 소수 의견' 섹션을 추가해, 다른 모델들과 눈에 띄게 다른 주장을 한 모델이 있으면 어느 모델이 무엇을 다르게 말했는지 1~3줄로 적으세요. " +
+  "의미 있는 차이가 없으면 '특이한 소수 의견 없음'이라고 적으세요.";
+
+// Cross-check instruction (master-off, on-demand): identify agreements & conflicts, do NOT synthesise.
+const CROSS_CHECK_INSTRUCTION =
+  '당신은 여러 AI 답변의 교차 검증관입니다. 답을 새로 종합하거나 최종 결론을 내리지 마세요. ' +
+  '대신 아래 답변들을 비교해 (1) 여러 모델이 공통으로 일치하는 핵심과 (2) 서로 상충하거나 한 모델만 주장하는 지점(사실·수치·결론이 다른 부분)을 구분해 간결한 마크다운으로 정리하세요. ' +
+  '상충 지점은 "A는 X, B는 Y"처럼 누가 무엇을 다르게 말했는지 명시하고, 사용자가 어디를 더 확인해야 하는지 알 수 있게 하세요. 새로운 사실을 지어내지 마세요.';
 
 // ---------- tiny DOM helper ----------
 function h(tag, props = {}, children = []) {
@@ -125,6 +157,7 @@ function initAppEvents() {
   $('#brandHomeBtn').addEventListener('click', () => { newChat(); closeDrawer(); });
   $('#settingsBtn').addEventListener('click', () => { openSettings(); closeDrawer(); });
   $('#exportBtn').addEventListener('click', exportChat);
+  $('#compactBtn').addEventListener('click', manualCompact);
   $('#logoutBtn').addEventListener('click', logout);
   $('#resetUsageBtn').addEventListener('click', doResetUsage);
   $('#syncNowBtn').addEventListener('click', () => runSyncSafe());
@@ -256,8 +289,10 @@ function onGlobalKeydown(e) {
     e.preventDefault();
     newChat();
   } else if (e.key === 'Escape') {
+    const compactModal = document.getElementById('compact-modal');
     const masterSel = document.getElementById('master-select-modal');
-    if (masterSel) { masterSel.remove(); }
+    if (compactModal) { if (typeof compactModal._resolveClose === 'function') compactModal._resolveClose(); else compactModal.remove(); }
+    else if (masterSel) { if (typeof masterSel._resolveClose === 'function') masterSel._resolveClose(); else masterSel.remove(); }
     else if (!$('#chatInstructionsModal').hidden) closeChatInstructions();
     else if (!$('#helpModal').hidden) closeHelp();
     else if (!$('#promptModal').hidden) closePromptModal();
@@ -1202,13 +1237,19 @@ function renderAttachPreview() {
 }
 
 // Build the per-message payload (text + images) for a turn's user message.
-function userPayload(turn) {
+function userPayload(turn, opts = {}) {
+  // historyStub: for PAST turns in history, reference attachments by name instead
+  // of re-sending image bytes / re-inlining file text every turn (big token saver).
+  const stub = !!opts.historyStub;
   let content = turn.user || '';
   const images = [];
   for (const a of turn.attachments || []) {
-    if (a.kind === 'image' && a.dataUrl) images.push(a.dataUrl);
-    else if (a.kind === 'text' && a.text != null) {
-      content += `${content ? '\n\n' : ''}[첨부 파일: ${a.name}]\n\`\`\`\n${a.text}\n\`\`\``;
+    if (a.kind === 'image' && a.dataUrl) {
+      if (stub) content += `${content ? '\n\n' : ''}[이전 첨부 이미지: ${a.name} — 앞서 참고함]`;
+      else images.push(a.dataUrl);
+    } else if (a.kind === 'text' && a.text != null) {
+      if (stub) content += `${content ? '\n\n' : ''}[이전 첨부 파일: ${a.name} — 앞서 참고함]`;
+      else content += `${content ? '\n\n' : ''}[첨부 파일: ${a.name}]\n\`\`\`\n${a.text}\n\`\`\``;
     }
   }
   return { content: content || '(첨부 파일을 참고해 답해주세요)', images };
@@ -1377,7 +1418,8 @@ async function runContentSearch() {
           (a.kind === 'text' && (a.text || '').toLowerCase().includes(term)))) return true;
         const rs = t.responses || {};
         return Object.values(rs).some((r) => (r.text || '').toLowerCase().includes(term))
-          || (t.master && (t.master.text || '').toLowerCase().includes(term));
+          || (t.master && (t.master.text || '').toLowerCase().includes(term))
+          || (t.kind === 'compaction' && (t.summary || '').toLowerCase().includes(term));
       })) matches.add(c.id);
     } catch { /* skip */ }
     if (chatSearchTerm.toLowerCase() !== term) return; // term changed; abort
@@ -1391,10 +1433,7 @@ async function newChat(options = {}) {
   currentChat = null;
   turns = [];
   renderChatTitle();
-  // Web search defaults ON for a new conversation.
-  settings.webSearchEnabled = true;
-  applyWebSearchButton();
-  persistSettings();
+  applyWebSearchButton(); // reflect the user's persisted web-search preference (don't override it)
   renderChatList();
   renderMessages();
   if (!options.skipHistory) pushAppHistoryState('empty');
@@ -1438,7 +1477,7 @@ function renderChips() {
       title: '클릭하여 이 모델 켜기/끄기',
       onclick: () => toggleModelChip(m),
     }, [
-      h('span', { class: 'badge', style: `background:${MODEL_META[m.type].color}` }),
+      h('span', { class: 'badge', style: `background:${MODEL_META[m.type]?.color || 'var(--muted)'}` }),
       m.label + (settings.masterId === m.id ? ' 👑' : ''),
     ]);
     modelChipsEl.appendChild(chip);
@@ -1461,14 +1500,15 @@ function toggleModelChip(model) {
 
 function showInlineNotice(message) {
   document.querySelector('.inline-notice-layer')?.remove();
-  const layer = h('div', { class: 'inline-notice-layer', onclick: () => layer.remove() });
+  const layer = h('div', { class: 'inline-notice-layer' });
   const notice = h('div', { class: 'inline-notice', role: 'alert' }, [
-    h('span', { text: message }),
-    h('button', { type: 'button', text: '확인', onclick: (e) => { e.stopPropagation(); layer.remove(); } }),
+    h('span', { class: 'inline-notice-msg', text: message }),
+    h('button', { type: 'button', text: '확인', onclick: () => layer.remove() }),
   ]);
-  notice.addEventListener('click', (e) => e.stopPropagation());
   layer.appendChild(notice);
   document.body.appendChild(layer);
+  // Auto-dismiss so it doesn't linger; any programmatic .inline-notice-layer removal still works.
+  setTimeout(() => layer.remove(), 6000);
 }
 // =====================================================================
 //  Monthly usage estimate (sidebar)
@@ -1524,14 +1564,17 @@ async function doResetUsage() {
 // =====================================================================
 //  Render messages (split / unified)
 // =====================================================================
-function renderMessages() {
+function renderMessages(opts = {}) {
+  const prevTop = messagesEl.scrollTop;
   messagesEl.innerHTML = '';
+  updateCompactBtn();
   if (!turns.length) {
     messagesEl.appendChild(emptyState());
     return;
   }
   for (const turn of turns) messagesEl.appendChild(renderTurn(turn));
-  scrollToBottom();
+  if (opts.keepScroll) messagesEl.scrollTop = prevTop;
+  else scrollToBottom();
 }
 
 function emptyState() {
@@ -1547,6 +1590,59 @@ function emptyState() {
   ]);
 }
 
+// Read the master's "### 소수 의견" section to judge whether the models converged.
+// Returns { state:'dissent', text } | { state:'consensus' } | null (no verdict yet:
+// still running, errored, or the section was omitted so we claim nothing).
+function masterVerdict(turn) {
+  const r = turn && turn.master;
+  if (!(r && r.status === 'done' && r.text)) return null;
+  const m = /###\s*소수\s*의견\s*\n?([\s\S]*)$/.exec(r.text);
+  if (!m) return null;
+  const body = m[1].replace(/[\s*_`>#-]+$/, '').trim();
+  if (!body) return null;
+  // "No meaningful dissent": the instructed sentinel ('특이한 소수 의견 없음') and common
+  // paraphrases — a negation tied to 의견/이견/차이/반대/다른 점, or a bare "없음".
+  const noDissent =
+    /(소수\s*의견|이견|차이|다른\s*점|반대|이의|불일치)\s*(은|는|이|가|점)?\s*(거의|딜히|특별히|크게)?\s*(없|관찰되지\s*않|발견되지\s*않|나타나지\s*않|존재하지\s*않|보이지\s*않)/.test(body)
+    || /특이\s*(한|사항)?\s*(점|것|의견)?\s*(은|는|이|가)?\s*없/.test(body)
+    || (body.length <= 12 && /^[\s·\-*]*없(음|습니다|다)?[.!]?$/.test(body));
+  if (noDissent) return { state: 'consensus' };
+  return { state: 'dissent', text: body };
+}
+
+// Configure the agreement pill on a turn's master card: ⚠ 이견 (warn) or ✓ 일치 (ok).
+function setDissentBadge(el, turn) {
+  const v = masterVerdict(turn);
+  if (!v) { el.hidden = true; el.textContent = ''; el.title = ''; el.className = 'dissent-badge'; return; }
+  el.hidden = false;
+  if (v.state === 'dissent') {
+    el.className = 'dissent-badge is-dissent';
+    el.textContent = '⚠ 이견';
+    el.title = '마스터가 소수 의견·이견을 표시했습니다. 판단을 확정하기 전에 각 모델의 원문을 확인해 보세요.\n\n' + v.text.slice(0, 240);
+  } else {
+    el.className = 'dissent-badge is-consensus';
+    el.textContent = '✓ 일치';
+    el.title = '모델들의 답이 대체로 일치했습니다 (마스터가 특이한 소수 의견을 발견하지 못함).';
+  }
+}
+
+function masterDissentBadge(turn) {
+  const span = h('span', { class: 'dissent-badge', id: `dissent-${turn.id}` });
+  setDissentBadge(span, turn);
+  return span;
+}
+
+// Master card header label — shows the model that actually aggregated (may be a
+// substitute if the designated master timed out / failed).
+function masterHeadLabel(turn, masterModel) {
+  const byId = turn.master?.by;
+  if (byId && byId !== masterModel.id) {
+    const by = turn.models?.[byId] || settings.models.find((x) => x.id === byId);
+    if (by) return `마스터 요약 · ${by.label} (대체)`;
+  }
+  return `마스터 요약 · ${masterModel.label}`;
+}
+
 function modelCard(turn, m, isMaster = false) {
   const key = isMaster ? 'master' : m.id;
   const resp = isMaster ? turn.master : turn.responses[m.id];
@@ -1555,7 +1651,7 @@ function modelCard(turn, m, isMaster = false) {
   applyRespToBody(body, resp, turn, key);
 
   const stats = h('span', { class: 'card-stats', id: `stats-${turn.id}-${key}` });
-  applyStats(stats, resp, m);
+  applyStats(stats, resp, statsModelFor(turn, key));
 
   const copyBtn = h('button', {
     class: 'card-act', title: '이 답변 복사',
@@ -1566,16 +1662,52 @@ function modelCard(turn, m, isMaster = false) {
     onclick: () => regenerate(turn, key),
   }, '↻');
 
-  return h('div', { class: 'model-card' + (isMaster ? ' master-card' : '') }, [
+  const verdict = isMaster ? masterVerdict(turn) : null;
+  return h('div', { class: 'model-card' + (isMaster ? ' master-card' : '') + (verdict && verdict.state === 'dissent' ? ' has-dissent' : '') }, [
     h('div', { class: 'card-head' }, [
       h('span', { class: 'badge', style: `background:${meta.color}` }),
       isMaster ? h('span', { class: 'crown' }, '👑') : null,
-      h('span', {}, isMaster ? `마스터 요약 · ${m.label}` : m.label),
+      h('span', isMaster ? { id: `masterhead-${turn.id}` } : {}, isMaster ? masterHeadLabel(turn, m) : m.label),
       h('span', { class: 'model-name', text: m.model }),
+      isMaster ? masterDissentBadge(turn) : null,
       h('span', { class: 'card-acts' }, [stats, copyBtn, regenBtn]),
     ]),
     body,
   ]);
+}
+
+// Cross-check result card (master-off ensemble feature). Reuses the generic card body.
+function crossCheckCard(turn) {
+  const cc = turn.crossCheck;
+  const body = h('div', { class: 'card-body md', id: `body-${turn.id}-crosscheck` });
+  applyRespToBody(body, cc, turn, 'crosscheck');
+  const byModel = cc?.by ? (turn.models?.[cc.by] || settings.models.find((x) => x.id === cc.by)) : null;
+  const stats = h('span', { class: 'card-stats', id: `stats-${turn.id}-crosscheck` });
+  applyStats(stats, cc, byModel);
+  const copyBtn = h('button', { class: 'card-act', title: '교차검증 복사', onclick: (e) => copyResp(turn, 'crosscheck', e.currentTarget) }, '⧉');
+  return h('div', { class: 'model-card crosscheck-card' }, [
+    h('div', { class: 'card-head' }, [
+      h('span', {}, '🔍 교차검증'),
+      byModel ? h('span', { class: 'model-name', text: byModel.label }) : null,
+      h('span', { class: 'card-acts' }, [stats, copyBtn]),
+    ]),
+    body,
+  ]);
+}
+
+// Resolve the model to price a card's usage against. For master it's the ACTUAL
+// aggregator (turn.master.by), which may differ from the designated masterId after a
+// substitution; for crosscheck it's turn.crossCheck.by.
+function statsModelFor(turn, key) {
+  if (key === 'master') {
+    const id = turn.master?.by || turn.masterId;
+    return turn.models?.[id] || settings.models.find((x) => x.id === id) || null;
+  }
+  if (key === 'crosscheck') {
+    const id = turn.crossCheck?.by;
+    return id ? (turn.models?.[id] || settings.models.find((x) => x.id === id)) : null;
+  }
+  return turn.models?.[key] || settings.models.find((x) => x.id === key) || null;
 }
 
 function applyStats(el, resp, model) {
@@ -1611,10 +1743,18 @@ function refreshCard(turn, key, resp) {
   if (b) applyRespToBody(b, resp, turn, key);
   const s = document.getElementById(`stats-${turn.id}-${key}`);
   if (s) {
-    const model = key === 'master'
-      ? (turn.models?.[turn.masterId] || settings.models.find((x) => x.id === turn.masterId))
-      : (turn.models?.[key] || settings.models.find((x) => x.id === key));
-    applyStats(s, resp, model);
+    applyStats(s, resp, statsModelFor(turn, key));
+  }
+  if (key === 'master') {
+    const d = document.getElementById(`dissent-${turn.id}`);
+    if (d) setDissentBadge(d, turn);
+    const card = b ? b.closest('.model-card') : null;
+    if (card) card.classList.toggle('has-dissent', masterVerdict(turn)?.state === 'dissent');
+    const head = document.getElementById(`masterhead-${turn.id}`);
+    if (head) {
+      const mm = turn.models?.[turn.masterId] || settings.models.find((x) => x.id === turn.masterId);
+      if (mm) head.textContent = masterHeadLabel(turn, mm);
+    }
   }
 }
 
@@ -1659,7 +1799,7 @@ function isPreviewableImageUrl(url) {
 }
 
 async function copyResp(turn, key, btn) {
-  const resp = key === 'master' ? turn.master : turn.responses[key];
+  const resp = key === 'master' ? turn.master : key === 'crosscheck' ? turn.crossCheck : turn.responses[key];
   await copyText(resp?.text || '', btn);
 }
 
@@ -1776,14 +1916,6 @@ function renderMasterProgress(body, turn) {
   }
 }
 
-function masterProgressText(turn) {
-  if (!turn?.master) return '대기 중…';
-  if (turn.master.status === 'collecting') return '마스터가 전체 답변 취합 중…';
-  const models = turnModels(turn);
-  if (!models.length) return '서브 에이전트 응답 대기 중…';
-  return models.map((m) => `${m.label} - ${modelProgressLabel(turn.responses?.[m.id])}`).join('\n');
-}
-
 function triggerEarlyMaster(turn) {
   if (!turn.masterEnabled || !turn.master || (turn.master.status !== 'pending' && turn.master.status !== 'error')) return;
   const master = settings.models.find((m) => m.id === turn.masterId) || turn.models?.[turn.masterId];
@@ -1796,58 +1928,203 @@ function triggerEarlyMaster(turn) {
     alert('아직 응답 완료된 모델이 없습니다.');
     return;
   }
-  showMasterModelSelector(turn, master, completed, async (sel) => {
-    if (sel.length === 0) return;
-    const sig = activeController ? activeController.signal : new AbortController().signal;
-    await runMaster(turn, master, sel, sig);
-    await updateTurn(session.key, turn, session.id);
+  showMasterModelSelector(turn, master, completed).then(async (sel) => {
+    if (!sel || sel.selected.length === 0) return;
+    if (activeController) { alert('진행 중인 작업이 끝난 뒤 다시 시도해주세요.'); return; }
+    activeController = new AbortController();
+    setSending(true);
+    try {
+      await runMaster(turn, sel.aggregator, sel.selected, activeController.signal);
+      await updateTurn(session.key, turn, session.id);
+    } finally {
+      setSending(false);
+      activeController = null;
+    }
   });
 }
 
-function showMasterModelSelector(turn, master, candidates, onConfirm) {
-  const existing = document.getElementById('master-select-modal');
-  if (existing) existing.remove();
+// On-demand cross-check (master-off): one model identifies agreements/conflicts across answers.
+async function triggerCrossCheck(turn) {
+  if (turn.crossCheck && turn.crossCheck.status === 'streaming') return;
+  if (activeController) { alert('진행 중인 작업이 끝난 뒤 다시 시도해주세요.'); return; }
+  const completed = turnModels(turn).filter((m) => { const r = turn.responses?.[m.id]; return r && r.status === 'done' && r.text; });
+  if (completed.length < 2) { alert('비교할 완료된 답변이 2개 이상 필요합니다.'); return; }
+  const aggregator = pickSummarizerModel();
+  if (!aggregator) { showInlineNotice('교차검증할 모델의 API 키가 없습니다. ⚙️ 설정에서 키를 입력하세요.'); return; }
+  activeController = new AbortController();
+  setSending(true);
+  try {
+    await runCrossCheck(turn, aggregator, completed, activeController.signal);
+    await updateTurn(session.key, turn, session.id);
+  } finally {
+    setSending(false);
+    activeController = null;
+  }
+}
 
-  const modal = h('div', { id: 'master-select-modal', class: 'modal' });
-  const backdrop = h('div', { class: 'modal-backdrop', onclick: () => modal.remove() });
-  modal.appendChild(backdrop);
+async function runCrossCheck(turn, aggregator, selectedModels, signal) {
+  if (aggregator.type !== 'local' && !aggregator.apiKey) {
+    turn.crossCheck = { status: 'error', error: '교차검증 모델 API 키가 없습니다.', text: '', by: aggregator.id };
+    renderMessages({ keepScroll: true });
+    return;
+  }
+  turn.crossCheck = { status: 'streaming', text: '', by: aggregator.id };
+  const cc = turn.crossCheck;
+  const startedAt = performance.now();
+  renderMessages({ keepScroll: true }); // create/refresh the cross-check card slot in the DOM
 
-  const card = h('div', { class: 'modal-card' });
-  card.appendChild(h('div', { class: 'modal-head' }, [
-    h('h2', { text: '요약에 사용할 모델 선택' }),
-    h('button', { class: 'icon-btn', onclick: () => modal.remove() }, '✕')
-  ]));
-
-  const bodyEl = h('div', { class: 'modal-body' });
-  const checks = {};
-  candidates.forEach((m) => {
-    const r = turn.responses?.[m.id];
-    const row = h('label', { class: 'opt-row' }, [
-      h('input', { type: 'checkbox', checked: true }),
-      h('span', { text: `${m.label} (${modelProgressLabel(r)})` })
-    ]);
-    checks[m.id] = row.querySelector('input');
-    bodyEl.appendChild(row);
-  });
-
-  const note = h('p', { class: 'muted', style: 'margin-bottom:8px; font-size:12px;' }, '현재까지 응답 완료된 모델만 선택할 수 있습니다. 선택한 모델들의 답변으로 마스터 요약을 생성합니다.');
-  bodyEl.insertBefore(note, bodyEl.firstChild);
-  card.appendChild(bodyEl);
-
-  card.appendChild(h('div', { class: 'modal-foot' }, [
-    h('button', { class: 'btn btn-ghost', onclick: () => modal.remove() }, '취소'),
-    h('button', {
-      class: 'btn btn-primary',
-      onclick: () => {
-        const sel = candidates.filter((m) => checks[m.id].checked);
-        modal.remove();
-        if (sel.length > 0) onConfirm(sel);
+  const tset = settings.timeoutMs;
+  const timeoutMs = tset > 0 ? tset : 0;
+  let ccTimeout = null;
+  if (timeoutMs > 0) {
+    ccTimeout = setTimeout(() => {
+      if (cc.status === 'streaming' && !cc.text) {
+        cc.status = 'error';
+        cc.error = `${Math.round(timeoutMs / 1000)}초 타임아웃`;
+        refreshCard(turn, 'crosscheck', cc);
+        // Substitute aggregator on timeout, mirroring the master flow.
+        const done2 = turnModels(turn).filter((m) => { const r = turn.responses?.[m.id]; return r && r.status === 'done' && r.text; });
+        if (done2.length >= 2) {
+          showMasterModelSelector(turn, aggregator, done2).then(async (selRes) => {
+            if (!selRes || selRes.selected.length < 2) return;
+            if (activeController) { alert('진행 중인 작업이 끝난 뒤 다시 시도해주세요.'); return; }
+            activeController = new AbortController();
+            setSending(true);
+            try {
+              await runCrossCheck(turn, selRes.aggregator, selRes.selected, activeController.signal);
+              await updateTurn(session.key, turn, session.id);
+            } finally {
+              setSending(false);
+              activeController = null;
+            }
+          });
+        }
       }
-    }, '요약 실행')
-  ]));
+    }, timeoutMs);
+  }
 
-  modal.appendChild(card);
-  document.body.appendChild(modal);
+  let block = `[질문]\n${turn.user}\n\n[각 모델의 답변]\n`;
+  for (const m of selectedModels) {
+    const r = turn.responses[m.id];
+    if (r && r.status === 'done' && r.text) block += `\n### ${m.label}\n${r.text}\n`;
+  }
+  const messages = [];
+  pushSystemLayers(messages, 'master'); // taste + RICH, no continuity L0
+  messages.push({ role: 'system', content: CROSS_CHECK_INSTRUCTION });
+  messages.push({ role: 'user', content: block });
+  cc.promptTokens = estimateTokens(messages.map((m) => m.content).join('\n'));
+
+  try {
+    const wrapped = new Promise((resolve) => {
+      streamChat(aggregator, messages, {
+        signal,
+        maxTokens: settings.maxTokens,
+        onChunk: (_c, full) => {
+          if (cc.status !== 'streaming') return;
+          if (ccTimeout) { clearTimeout(ccTimeout); ccTimeout = null; }
+          cc.text = full;
+          const b = document.getElementById(`body-${turn.id}-crosscheck`);
+          if (b) { b.classList.add('streaming'); renderResponseHtml(b, full); }
+        },
+      }).then((full) => {
+        if (ccTimeout) { clearTimeout(ccTimeout); ccTimeout = null; }
+        if (cc.status === 'streaming') { cc.text = full; cc.status = 'done'; }
+        resolve();
+      }).catch((err) => {
+        if (ccTimeout) { clearTimeout(ccTimeout); ccTimeout = null; }
+        if (signal.aborted) { cc.status = cc.text ? 'done' : 'error'; cc.error = '중단됨'; }
+        else { cc.status = 'error'; cc.error = String(err.message || err); }
+        resolve();
+      });
+    });
+    let raceTimer = null;
+    const timeoutP = timeoutMs > 0 ? new Promise((r) => { raceTimer = setTimeout(r, timeoutMs); }) : Promise.resolve();
+    await Promise.race([wrapped, timeoutP]);
+    if (raceTimer) { clearTimeout(raceTimer); raceTimer = null; }
+  } catch (err) {
+    if (signal.aborted) { cc.status = cc.text ? 'done' : 'error'; cc.error = '중단됨'; }
+    else { cc.status = 'error'; cc.error = String(err.message || err); }
+  } finally {
+    if (ccTimeout) { clearTimeout(ccTimeout); ccTimeout = null; }
+  }
+  cc.elapsedMs = performance.now() - startedAt;
+  cc.completionTokens = estimateTokens(cc.text || '');
+  if (aggregator.type !== 'local' && (cc.promptTokens != null || cc.completionTokens > 0)) {
+    addUsage(settings, aggregator.id, aggregator, cc.promptTokens || 0, cc.completionTokens || 0);
+    persistSettings(); renderUsage();
+  }
+  refreshCard(turn, 'crosscheck', cc);
+  renderMessages({ keepScroll: true }); // refresh the ensemble bar button state (교차검증 중 → 다시)
+}
+
+// Resolves with { aggregator, selected } (aggregator = the model that will summarise,
+// selected = whose answers to include), or null if cancelled. Letting the aggregator be
+// chosen means a timed-out/failed master can be replaced by another completed model.
+function showMasterModelSelector(turn, defaultAggregator, candidates) {
+  return new Promise((resolve) => {
+    if (!candidates || !candidates.length) { resolve(null); return; }
+    const existing = document.getElementById('master-select-modal');
+    if (existing && typeof existing._resolveClose === 'function') existing._resolveClose();
+    else if (existing) existing.remove();
+
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      modal.remove();
+      resolve(result);
+    };
+
+    const modal = h('div', { id: 'master-select-modal', class: 'modal' });
+    modal._resolveClose = () => finish(null);
+    modal.appendChild(h('div', { class: 'modal-backdrop', onclick: () => finish(null) }));
+
+    const card = h('div', { class: 'modal-card' });
+    card.appendChild(h('div', { class: 'modal-head' }, [
+      h('h2', { text: '요약 모델 · 포함할 답변 선택' }),
+      h('button', { class: 'icon-btn', onclick: () => finish(null) }, '✕')
+    ]));
+
+    const bodyEl = h('div', { class: 'modal-body' });
+    bodyEl.appendChild(h('p', { class: 'muted', style: 'margin-bottom:8px; font-size:12px;' },
+      '요약을 수행할 모델(집계자)과 요약에 포함할 답변을 고르세요. 마스터가 실패·지연되면 다른 모델로 요약할 수 있습니다.'));
+
+    const defId = candidates.some((m) => m.id === defaultAggregator?.id) ? defaultAggregator.id : candidates[0].id;
+    bodyEl.appendChild(h('div', { class: 'sel-group-label' }, '요약을 수행할 모델'));
+    const aggRadios = {};
+    candidates.forEach((m) => {
+      const radio = h('input', { type: 'radio', name: 'aggregator' });
+      radio.checked = (m.id === defId);
+      aggRadios[m.id] = radio;
+      bodyEl.appendChild(h('label', { class: 'opt-row' }, [radio, h('span', { text: m.label })]));
+    });
+
+    bodyEl.appendChild(h('div', { class: 'sel-group-label' }, '요약에 포함할 답변'));
+    const checks = {};
+    candidates.forEach((m) => {
+      const r = turn.responses?.[m.id];
+      const cb = h('input', { type: 'checkbox' });
+      cb.checked = true;
+      checks[m.id] = cb;
+      bodyEl.appendChild(h('label', { class: 'opt-row' }, [cb, h('span', { text: `${m.label} (${modelProgressLabel(r)})` })]));
+    });
+    card.appendChild(bodyEl);
+
+    card.appendChild(h('div', { class: 'modal-foot' }, [
+      h('button', { class: 'btn btn-ghost', onclick: () => finish(null) }, '취소'),
+      h('button', {
+        class: 'btn btn-primary',
+        onclick: () => {
+          const selected = candidates.filter((m) => checks[m.id].checked);
+          const aggregator = candidates.find((m) => aggRadios[m.id].checked) || candidates.find((m) => m.id === defId);
+          finish(selected.length > 0 && aggregator ? { aggregator, selected } : null);
+        }
+      }, '요약 실행')
+    ]));
+
+    modal.appendChild(card);
+    document.body.appendChild(modal);
+  });
 }
 
 // ---- Citations ----
@@ -1929,7 +2206,121 @@ function turnModels(turn) {
     .filter(Boolean);
 }
 
+function renderCompactionCard(turn) {
+  const wrap = h('div', { class: 'turn compaction-turn', id: `turn-${turn.id}` });
+  const card = h('div', { class: 'compaction-card' }, [
+    h('div', { class: 'compaction-head' }, [
+      h('span', { class: 'compaction-title' }, `🗜 이전 대화 ${turn.compactedCount || ''}개가 아래로 요약되었습니다`),
+      h('span', { class: 'compaction-sub' }, '채팅 내용은 그대로 남아 있어요. 이후 질문에는 이 요약 + 최근 대화만 전송됩니다 (토큰 절약).'),
+    ]),
+  ]);
+  const body = h('div', { class: 'compaction-body md' });
+  renderResponseHtml(body, turn.summary || '');
+  card.appendChild(h('details', { class: 'compaction-details' }, [
+    h('summary', {}, '요약 내용 보기'),
+    body,
+  ]));
+  wrap.appendChild(card);
+  return wrap;
+}
+
+// Client-side ensemble agreement signal (no API call): rough expression-similarity across
+// the completed answers. The master-off analog of masterVerdict — a free "do the models
+// broadly agree?" hint (independent-model agreement correlates with reliability).
+// Readiness + optional similarity signal for the master-off ensemble strip.
+// Returns null only when there aren't at least 2 models on this turn to compare.
+// The strip appears as soon as the turn starts (button disabled) and "lights up"
+// once every model has settled — done, or errored/timed-out. The per-model timeout
+// flips a hung response to 'error', so `settled` naturally covers the "someone is
+// stuck" case the user asked about without any extra timer here.
+function ensembleInfo(turn) {
+  const models = turnModels(turn);
+  if (models.length < 2) return null;
+  const resps = models.map((m) => turn.responses?.[m.id]);
+  const doneTexts = resps.filter((r) => r && r.status === 'done' && r.text).map((r) => r.text);
+  const settled = resps.every((r) => r && (r.status === 'done' || r.status === 'error'));
+  const ready = settled && doneTexts.length >= 2;
+  return { doneCount: doneTexts.length, total: models.length, settled, ready, sig: ready ? similaritySignal(doneTexts) : null };
+}
+// Pairwise char-bigram similarity over finished answers → { state, score } or null.
+function similaritySignal(texts) {
+  const sets = texts.map(ensembleGrams);
+  let sum = 0, pairs = 0;
+  for (let i = 0; i < sets.length; i++) {
+    for (let j = i + 1; j < sets.length; j++) {
+      if (!sets[i].size || !sets[j].size) continue; // skip answers with no comparable words (code/emoji only)
+      sum += jaccardSim(sets[i], sets[j]); pairs++;
+    }
+  }
+  if (pairs === 0) return null; // nothing comparable → no similarity number
+  const score = sum / pairs;
+  // Conservative bands: only flag clear agreement/divergence, else neutral "mixed".
+  const state = score >= 0.30 ? 'agree' : (score <= 0.12 ? 'diverge' : 'mixed');
+  return { state, score };
+}
+function ensembleGrams(text) {
+  // Character bigrams over letters/numbers — robust across Korean (agglutinative: particle
+  // differences barely change bigrams), English, and code. Pure emoji/punctuation → empty set.
+  const norm = String(text).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+  const grams = new Set();
+  for (let i = 0; i < norm.length - 1; i++) grams.add(norm.slice(i, i + 2));
+  if (norm.length === 1) grams.add(norm);
+  return grams;
+}
+function jaccardSim(a, b) {
+  if (!a.size || !b.size) return 0;
+  let inter = 0;
+  for (const w of a) if (b.has(w)) inter++;
+  return inter / (a.size + b.size - inter);
+}
+
+// The per-turn ensemble strip (shown when master is off). While answers are still
+// arriving it stays muted with a disabled 교차검증 button; once every model has
+// finished (or timed out) the button lights up and a similarity hint appears.
+function renderEnsembleBar(turn, info) {
+  const cc = turn.crossCheck;
+  const ccRunning = cc && cc.status === 'streaming';
+  const enabled = info.ready && !ccRunning;
+  const sig = info.sig;
+
+  let cls = 'ensemble-wait', label;
+  if (!info.settled) {
+    label = `⏳ 답변 기다리는 중… (${info.doneCount}/${info.total} 완료)`;
+  } else if (!info.ready) {
+    label = '완료된 답변이 부족해요 (비교하려면 2개 이상 필요)';
+  } else if (sig) {
+    cls = `ensemble-${sig.state}`;
+    label = sig.state === 'agree' ? '✓ 답변 방향이 대체로 일치'
+      : sig.state === 'diverge' ? '⚠ 답변이 갈립니다 — 교차 확인 권장'
+      : '~ 부분적으로 일치';
+  } else {
+    cls = 'ensemble-ready';
+    label = '답변 비교 준비 완료';
+  }
+
+  const btnLabel = ccRunning ? '교차검증 중…'
+    : (cc && (cc.status === 'done' || cc.status === 'error')) ? '🔍 교차검증 다시' : '🔍 교차검증';
+  const barTitle = info.ready
+    ? '완료된 답변들의 표현 유사도 근사치입니다. 정확한 비교는 🔍 교차검증을 눌러 확인하세요.'
+    : '모든 모델의 답변이 도착하면(또는 타임아웃되면) 교차검증을 사용할 수 있어요.';
+
+  const right = [];
+  if (info.ready && sig) right.push(h('span', { class: 'ens-score', text: `유사도 ~${Math.round(sig.score * 100)}%` }));
+  right.push(h('button', {
+    class: 'ens-cc-btn',
+    disabled: !enabled,
+    title: enabled ? '완료된 답변들의 공통점·차이점을 한 모델이 짚어 줍니다 (토큰 사용)' : '모든 답변이 도착하면 눌러서 교차 확인할 수 있어요',
+    onclick: (e) => { e.stopPropagation(); triggerCrossCheck(turn); },
+  }, btnLabel));
+
+  return h('div', { class: `ensemble-bar ${cls}`, title: barTitle }, [
+    h('span', { class: 'ens-label' }, label),
+    h('span', { class: 'ens-right' }, right),
+  ]);
+}
+
 function renderTurn(turn) {
+  if (turn.kind === 'compaction') return renderCompactionCard(turn);
   const bubble = h('div', { class: 'user-bubble' });
   if (turn.attachments?.length) {
     const row = h('div', { class: 'bubble-attachments' });
@@ -1980,13 +2371,21 @@ function renderTurn(turn) {
       ]);
     }
   } else {
-    // SPLIT: every model answer side-by-side. Master (if on) spans full width.
-    const cards = models.map((m) => modelCard(turn, m));
-    if (masterModel) cards.push(modelCard(turn, masterModel, true));
-    answers = h('div', { class: 'split-grid' }, cards);
+    // SPLIT: model answers side-by-side in an auto-fit grid. The master card is
+    // rendered as a full-width sibling BELOW the grid (NOT as a grid item spanning
+    // 1 / -1) because a spanning item keeps `auto-fit` from collapsing the empty
+    // tracks — which used to squeeze the model cards to the left and leave a big
+    // empty gap on the right whenever master was on.
+    const grid = h('div', { class: 'split-grid' }, models.map((m) => modelCard(turn, m)));
+    answers = masterModel
+      ? h('div', { class: 'split-wrap' }, [grid, modelCard(turn, masterModel, true)])
+      : grid;
   }
 
-  return h('div', { class: 'turn', id: `turn-${turn.id}` }, [userRow, answers]);
+  const ens = turn.masterEnabled ? null : ensembleInfo(turn);
+  const ensembleBar = ens ? renderEnsembleBar(turn, ens) : null;
+  const crossCard = turn.crossCheck ? crossCheckCard(turn) : null;
+  return h('div', { class: 'turn', id: `turn-${turn.id}` }, [userRow, ensembleBar, answers, crossCard]);
 }
 
 function scrollToBottom() {
@@ -1996,24 +2395,87 @@ function scrollToBottom() {
 // =====================================================================
 //  Sending — fan-out to all models, then master aggregation
 // =====================================================================
-function buildHistory(model, currentTurn) {
-  // Per-model conversation: only turns where this model answered,
-  // keeping clean user/assistant alternation.
-  // Priority: per-chat prompt (if set) first, then global custom, then rich formatting instruction (effective for this chat).
-  const modelId = model.id;
-  const allowImages = !!model.vision;
-  const msgs = [];
+
+/** Per-turn snapshot: master summary succeeded for this turn (not current settings toggle). */
+function turnMasterReady(turn) {
+  const m = turn?.master;
+  return !!(turn?.masterEnabled && m && m.status === 'done' && m.text && String(m.text).trim());
+}
+
+/**
+ * Assistant text for a past turn in this model's history.
+ * Master success → official synthesis + this model's own answer (hybrid).
+ * Else → own answer only. Returns null if this model did not complete that turn.
+ * Uses turn.masterEnabled / turn.master only — never settings.masterEnabled.
+ */
+function assistantTextForHistory(turn, modelId, opts = {}) {
+  const compact = !!opts.compact;
+  const r = turn.responses?.[modelId];
+  const own = (r && r.status === 'done' && r.text) ? r.text : null;
+  const masterReady = turnMasterReady(turn);
+
+  if (own && masterReady) {
+    const master = String(turn.master.text).trim();
+    if (compact) {
+      // Old turn: keep only the shared official conclusion (the "spine") and drop
+      // the bulky own answer to bound long-conversation token growth.
+      return '[이전 공식 종합 — 사용자가 보고 이어가는 기준]\n' + master;
+    }
+    // Recent turn — hybrid: shared official synthesis + this model's own answer (keeps its voice).
+    return (
+      '[이전 공식 종합 — 사용자가 보고 이어가는 기준]\n' + master +
+      '\n\n[내가 그 턴에 제출한 개별 답 — 내 관점·세부 참고]\n' + own
+    );
+  }
+  if (own) {
+    // No master that turn. Recent → full own; old → truncated so it doesn't dominate.
+    if (compact && own.length > HISTORY_OLD_OWN_CHARS) {
+      return own.slice(0, HISTORY_OLD_OWN_CHARS) + '\n…(이전 답 일부 생략)';
+    }
+    return own;
+  }
+  if (masterReady) {
+    // This model missed that turn (timeout/error) but the group reached an official
+    // conclusion. Hand it that synthesis so it can rejoin coherently, clearly marked
+    // as NOT its own words so it doesn't adopt the master's voice (keeps diversity).
+    return (
+      '[이전 공식 종합 — 이 턴에는 내가 응답하지 못했음. 내 답은 아니지만 그룹이 도달한 공식 결론이니 맥락으로만 참고]\n' +
+      String(turn.master.text).trim()
+    );
+  }
+  return null;
+}
+
+/** Most recent successful master text before `beforeTurn` (for runMaster context). */
+function latestSuccessfulMasterBefore(beforeTurn) {
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const t = turns[i];
+    if (beforeTurn && t.id === beforeTurn.id) continue;
+    // Only look at turns strictly BEFORE the target, so regenerating an earlier
+    // turn never pulls a later turn's synthesis in as the "previous" official one.
+    if (beforeTurn && t.createdAt >= beforeTurn.createdAt) continue;
+    if (turnMasterReady(t)) return String(t.master.text).trim();
+  }
+  return null;
+}
+
+/**
+ * System layers: optional L0 core, exclusive taste (chat > global), optional RICH.
+ * @param {'model'|'master'} kind — model gets CONTINUITY_INSTRUCTION; master gets MASTER_INSTRUCTION later.
+ */
+function pushSystemLayers(msgs, kind = 'model') {
+  if (kind === 'model') {
+    msgs.push({ role: 'system', content: CONTINUITY_INSTRUCTION });
+  }
 
   const chatPrompt = currentChat?.chatPrompt?.trim() || '';
   if (chatPrompt) {
-    // Per-chat prompt present → use only this, ignore global customPrompt entirely
+    // Per-chat taste replaces global customPrompt (one slot only; L0 stays separate).
     msgs.push({ role: 'system', content: chatPrompt });
   } else if (settings.customPrompt.trim()) {
     msgs.push({ role: 'system', content: settings.customPrompt.trim() });
   }
 
-  // Rich formatting: respect per-chat explicit choice if the user has set it via the per-chat dialog.
-  // Otherwise fall back to global. This checkbox directly controls whether the rich instruction goes into the API.
   const chatRich = currentChat && (currentChat.chatRichStyle === true || currentChat.chatRichStyle === false)
     ? currentChat.chatRichStyle
     : null;
@@ -2021,19 +2483,285 @@ function buildHistory(model, currentTurn) {
   if (effectiveRich !== false) {
     msgs.push({ role: 'system', content: RICH_STYLE_INSTRUCTION });
   }
+}
 
-  for (const t of turns) {
-    if (t.id === currentTurn.id) continue;
-    const r = t.responses?.[modelId];
-    if (r && r.status === 'done' && r.text) {
-      const p = userPayload(t);
-      msgs.push({ role: 'user', content: p.content, images: allowImages ? p.images : [] });
-      msgs.push({ role: 'assistant', content: r.text });
-    }
+// ---- History budgeting (hardcoded) ----
+// Driven by estimated TOKENS, not a fixed turn count: turns vary 10–100× in size, so a
+// token budget is a sounder unit for "how much recent context to send in full". Recent
+// turns are kept FULL (hybrid own + official synthesis) up to ~HISTORY_FULL_TOKENS; older
+// turns collapse to the official-synthesis "spine" (own dropped/truncated) so far-back
+// decisions still survive cheaply. Attachments are only re-sent for the last few turns.
+const HISTORY_FULL_TOKENS = 12000;   // recent turns kept verbatim up to ~this many tokens
+const HISTORY_FULL_MAX_TURNS = 20;   // hard cap on full turns (guards pathological tiny-turn counts)
+const HISTORY_OLD_OWN_CHARS = 600;   // older turns w/o a master: truncate own answer to this
+const HISTORY_ATTACH_TURNS = 2;      // re-send real attachments only for the last N turns
+
+function buildHistory(model, currentTurn) {
+  // Per-model conversation: only turns where this model has history.
+  // System: L0 continuity → exclusive taste → RICH.
+  // Recent turns: hybrid (official synthesis + own). Older turns: official "spine"
+  // only (own dropped/truncated). Attachments re-sent only within a short window.
+  const modelId = model.id;
+  const allowImages = !!model.vision;
+  const msgs = [];
+
+  pushSystemLayers(msgs, 'model');
+
+  // If earlier turns were compacted into a summary, inject it once as shared context
+  // and skip the turns it already covers.
+  const marker = latestCompaction(currentTurn.createdAt);
+  if (marker && marker.summary) {
+    msgs.push({ role: 'system', content: '[이전 대화 요약 — 앞선 대화의 핵심입니다. 이 맥락을 이어서 답하세요]\n' + marker.summary });
   }
+
+  // Eligible past turns (strictly before the current one) that this model can carry.
+  const past = [];
+  for (const t of turns) {
+    if (t.kind === 'compaction') continue;
+    if (t.id === currentTurn.id) continue;
+    // Only turns BEFORE the current one — regenerating an earlier turn must not
+    // leak later ("future") turns into its history as if they were past context.
+    if (t.createdAt >= currentTurn.createdAt) continue;
+    if (marker && t.createdAt <= (marker.coversUpTo ?? marker.createdAt)) continue; // already inside the summary
+    if (!assistantTextForHistory(t, modelId)) continue;
+    past.push(t);
+  }
+  const fullIds = new Set();
+  let fullTok = 0;
+  // Decide FULL vs spine by walking newest→oldest and keeping full until the token
+  // budget (the newest eligible turn is always full). Older turns become spine.
+  for (let i = past.length - 1; i >= 0 && (past.length - i) <= HISTORY_FULL_MAX_TURNS; i--) {
+    const t = past[i];
+    const txt = assistantTextForHistory(t, modelId, { compact: false }) || '';
+    const tok = estimateTokens(txt) + estimateTokens(userPayload(t, { historyStub: true }).content);
+    if (fullIds.size === 0 || fullTok + tok <= HISTORY_FULL_TOKENS) { fullIds.add(t.id); fullTok += tok; }
+    else break;
+  }
+  const attachFrom = Math.max(0, past.length - HISTORY_ATTACH_TURNS);
+
+  past.forEach((t, idx) => {
+    const compact = !fullIds.has(t.id);   // outside the recent full-token window → spine only
+    const stubAttach = idx < attachFrom;  // older than the attach window → stub attachments
+    const assistantText = assistantTextForHistory(t, modelId, { compact });
+    if (!assistantText) return;
+    const p = userPayload(t, { historyStub: stubAttach });
+    msgs.push({ role: 'user', content: p.content, images: (allowImages && !stubAttach) ? p.images : [] });
+    msgs.push({ role: 'assistant', content: assistantText });
+  });
+
   const cur = userPayload(currentTurn);
   msgs.push({ role: 'user', content: cur.content, images: allowImages ? cur.images : [] });
   return msgs;
+}
+
+// ---- Long-conversation compaction ----
+// When a chat gets very long, the user can fold older turns into a single summary.
+// The visible chat is NOT deleted — a summary card is inserted, and from then on only
+// (summary + recent turns) is sent to the models, which bounds token cost. The summary
+// marker is just another (encrypted, synced) turn with kind:'compaction'.
+const COMPACT_TOKEN_BUDGET = 16000; // suggest folding once the foldable (old) region ≈ exceeds this many tokens
+const COMPACT_KEEP = 10;      // recent turns kept verbatim (not folded into the summary)
+const COMPACT_MIN = 6;        // don't bother folding fewer than this many turns
+
+const COMPACTION_INSTRUCTION =
+  '당신은 긴 대화를 이후 대화에 필요한 핵심만 남겨 압축하는 요약가입니다. ' +
+  '결정된 사항, 사용자의 선호·전제·제약, 중요한 고유명사·수치·용어 정의, 아직 해결되지 않은 질문을 반드시 보존하세요. ' +
+  '잡담과 중복은 지우고, 이후 어떤 모델이든 이 요약만 보고 맥락을 자연스럽게 이어갈 수 있도록 ' +
+  '구조화된 마크다운(제목·불릿)으로 간결하게 작성하세요. 새로운 내용을 지어내지 마세요.';
+
+// The single compaction marker turn for this chat that precedes `beforeCreatedAt`.
+function latestCompaction(beforeCreatedAt = Infinity) {
+  let found = null;
+  for (const t of turns) {
+    if (t.kind !== 'compaction') continue;
+    if (t.createdAt >= beforeCreatedAt) continue;
+    if (!found || t.createdAt > found.createdAt) found = t;
+  }
+  return found;
+}
+
+// How many real (non-marker) turns exist after the latest compaction.
+function uncompactedCount() {
+  const m = latestCompaction();
+  return turns.filter((t) => t.kind !== 'compaction' && (!m || t.createdAt > m.createdAt)).length;
+}
+
+// Estimated size of the region that WOULD be folded now (old turns beyond COMPACT_KEEP):
+// { turns, tokens }. That region is re-sent as "spine" on every turn, so its token size
+// (not turn count) is the right signal for when folding actually pays off.
+function foldableStats() {
+  const m = latestCompaction();
+  const reals = turns.filter((t) => t.kind !== 'compaction' && (!m || t.createdAt > m.createdAt));
+  const foldable = reals.slice(0, Math.max(0, reals.length - COMPACT_KEEP));
+  let tokens = 0;
+  for (const t of foldable) {
+    tokens += estimateTokens(t.user || '');
+    if (turnMasterReady(t)) tokens += estimateTokens(String(t.master.text));
+    else {
+      const first = (t.modelIds || []).map((id) => t.responses?.[id]).find((r) => r && r.status === 'done' && r.text);
+      if (first) tokens += estimateTokens(first.text);
+    }
+  }
+  return { turns: foldable.length, tokens };
+}
+
+// Prefer the master model as the summarizer; else any usable enabled model; else any usable.
+function pickSummarizerModel() {
+  const master = settings.models.find((m) => m.id === settings.masterId);
+  if (master && (master.type === 'local' || master.apiKey)) return master;
+  return settings.models.find((m) => m.enabled && (m.type === 'local' || m.apiKey))
+    || settings.models.find((m) => m.type === 'local' || m.apiKey)
+    || null;
+}
+
+function buildCompactionInput(prevSummary, turnsToCompact) {
+  let s = '';
+  if (prevSummary) s += '[기존 요약]\n' + prevSummary + '\n\n';
+  s += '[압축할 대화]\n';
+  turnsToCompact.forEach((t, i) => {
+    const q = (t.user || '(첨부만)').slice(0, 1000);
+    let a;
+    if (turnMasterReady(t)) a = String(t.master.text).trim();
+    else {
+      const first = (t.modelIds || []).map((id) => t.responses?.[id])
+        .find((r) => r && r.status === 'done' && r.text);
+      a = first ? first.text : '(응답 없음)';
+    }
+    s += `\n#${i + 1}\n사용자: ${q}\n정리: ${a.slice(0, 1200)}\n`;
+  });
+  return s;
+}
+
+// Fold older turns into one summary marker (LLM call). Returns true on success.
+async function runCompaction(signal) {
+  if (!currentChat) return false;
+  const chatId = currentChat.id;
+  const summarizer = pickSummarizerModel();
+  if (!summarizer) { showInlineNotice('요약할 모델의 API 키가 없습니다. ⚙️ 설정에서 키를 입력하세요.'); return false; }
+
+  const prev = latestCompaction();
+  const reals = turns.filter((t) => t.kind !== 'compaction' && (!prev || t.createdAt > prev.createdAt));
+  const toCompact = reals.slice(0, Math.max(0, reals.length - COMPACT_KEEP));
+  if (toCompact.length < COMPACT_MIN) return false;
+
+  const input = buildCompactionInput(prev?.summary || '', toCompact);
+  const messages = [
+    { role: 'system', content: COMPACTION_INSTRUCTION },
+    { role: 'user', content: input },
+  ];
+
+  showInlineNotice('🗜 이전 대화를 요약하는 중… (잠시만요)');
+  let summary = '';
+  try {
+    summary = await streamChat(summarizer, messages, {
+      signal: signal || new AbortController().signal,
+      maxTokens: settings.maxTokens,
+    });
+  } catch (err) {
+    document.querySelector('.inline-notice-layer')?.remove();
+    if (!(signal && signal.aborted)) showInlineNotice('요약에 실패했습니다: ' + String(err.message || err));
+    return false;
+  }
+  if (!summary || !summary.trim()) { showInlineNotice('요약 결과가 비어 있어 압축을 건너뜁니다.'); return false; }
+  // If Stop was pressed after the summary text arrived, don't commit a marker
+  // (send() also bails, so the message the user was sending isn't lost).
+  if (signal && signal.aborted) { document.querySelector('.inline-notice-layer')?.remove(); return false; }
+
+  if (summarizer.type !== 'local') {
+    addUsage(settings, summarizer.id, summarizer, estimateTokens(input), estimateTokens(summary));
+    persistSettings(); renderUsage();
+  }
+
+  const lastCompacted = toCompact[toCompact.length - 1];
+  const marker = {
+    id: prev?.id || uid(),
+    chatId,
+    createdAt: lastCompacted.createdAt + 1,
+    kind: 'compaction',
+    summary: summary.trim(),
+    compactedCount: (prev?.compactedCount || 0) + toCompact.length,
+    coversUpTo: lastCompacted.createdAt,
+    summarizerLabel: summarizer.label,
+  };
+  await addTurn(session.key, marker, session.id);
+  scheduleSync();
+
+  // Only mutate the live view if the user is still on the chat we compacted
+  // (they could have switched chats during the summary call). Storage is updated
+  // either way, so the marker shows up when they return.
+  if (currentChat && currentChat.id === chatId) {
+    turns = turns.filter((t) => t.id !== marker.id);
+    turns.push(marker);
+    turns.sort((a, b) => a.createdAt - b.createdAt);
+    currentChat.compactHintAt = 0;
+    renderMessages();
+    showInlineNotice(`✅ 이전 ${marker.compactedCount}개 대화를 요약했습니다. 이후 질문은 요약 + 최근 대화만 전송됩니다.`);
+  }
+  return true;
+}
+
+// Modal asking whether to compact a long conversation. Resolves 'compact' | 'continue'.
+function showCompactionPrompt(tokens) {
+  return new Promise((resolve) => {
+    const existing = document.getElementById('compact-modal');
+    if (existing) existing.remove();
+    let settled = false;
+    const done = (r) => { if (settled) return; settled = true; modal.remove(); resolve(r); };
+    const modal = h('div', { id: 'compact-modal', class: 'modal' });
+    modal._resolveClose = () => done('continue');
+    modal.appendChild(h('div', { class: 'modal-backdrop', onclick: () => done('continue') }));
+    const card = h('div', { class: 'modal-card' }, [
+      h('div', { class: 'modal-head' }, [
+        h('h2', {}, '🗜 대화가 길어졌어요'),
+        h('button', { class: 'icon-btn', onclick: () => done('continue') }, '✕'),
+      ]),
+      h('div', { class: 'modal-body' }, [
+        h('p', {}, `이 대화가 길어져, 매 질문마다 함께 전송되는 이전 맥락이 약 ${Math.max(1, Math.round(tokens / 1000))}K 토큰까지 커졌어요. 그만큼 토큰(비용)이 늘어납니다.`),
+        h('p', { class: 'muted' }, '완전히 새로운 주제라면 “+ 새 채팅”이 가장 절약돼요. 지금 맥락을 이어가려면 앞부분 대화를 하나의 요약으로 압축할 수 있어요. 채팅 화면의 기존 내용은 그대로 남고 요약 카드가 하나 추가되며, 이후 질문에는 (요약 + 최근 대화)만 전송됩니다.'),
+      ]),
+      h('div', { class: 'modal-foot' }, [
+        h('button', { class: 'btn btn-ghost', onclick: () => done('continue') }, '그냥 계속'),
+        h('button', { class: 'btn btn-primary', onclick: () => done('compact') }, '이전 대화 요약하기'),
+      ]),
+    ]);
+    modal.appendChild(card);
+    document.body.appendChild(modal);
+  });
+}
+
+// Keep the manual "🗜 대화 압축" button visible whenever a chat is open (so it's
+// discoverable), but dim it — while staying clickable so its tooltip still works —
+// until there's enough older conversation to actually compact.
+function updateCompactBtn() {
+  const btn = document.getElementById('compactBtn');
+  if (!btn) return;
+  if (!currentChat) { btn.hidden = true; return; }
+  btn.hidden = false;
+  const canCompact = (uncompactedCount() - COMPACT_KEEP) >= COMPACT_MIN;
+  btn.classList.toggle('is-dim', !canCompact);
+  btn.title = canCompact
+    ? '이전 대화를 짧게 요약해서 다음 질문부터 토큰(비용)을 줄여줍니다. 화면의 대화 내용은 그대로 유지돼요.'
+    : '대화가 더 길어지면 쓸 수 있어요. 이전 대화를 짧게 요약해 다음 질문부터 토큰(비용)을 줄여주는 기능입니다.';
+}
+
+// Manual, on-demand compaction (top-bar button) — same fold as the auto prompt.
+async function manualCompact() {
+  if (activeController) { alert('진행 중인 작업이 끝난 뒤 다시 시도해주세요.'); return; }
+  if (!currentChat) return;
+  if ((uncompactedCount() - COMPACT_KEEP) < COMPACT_MIN) {
+    showInlineNotice('아직 요약할 만큼 대화가 길지 않습니다.');
+    return;
+  }
+  if (!confirm('이전 대화를 하나의 요약으로 압축할까요?\n\n채팅 화면의 내용은 그대로 남고, 이후 질문에는 (요약 + 최근 대화)만 전송돼 토큰을 아낍니다.')) return;
+  activeController = new AbortController();
+  setSending(true);
+  try {
+    await runCompaction(activeController.signal);
+  } finally {
+    setSending(false);
+    activeController = null;
+    updateCompactBtn();
+  }
 }
 
 async function send() {
@@ -2048,6 +2776,12 @@ async function send() {
   const active = enabledModels(settings);
   if (!active.length) { alert('활성화된 모델이 없습니다. 설정 또는 하단 칩에서 모델을 켜주세요.'); return; }
 
+  // Claim the send lock up-front so a second Enter (e.g. while the compaction prompt
+  // is open) can't start an overlapping send. try/finally guarantees cleanup.
+  activeController = new AbortController();
+  const signal = activeController.signal;
+  setSending(true);
+  try {
   const title = text ? text.slice(0, 40) : '첨부 파일';
 
   // Ensure a chat room exists
@@ -2063,13 +2797,39 @@ async function send() {
     renderChatList();
   }
 
+  // Long conversation? Offer to fold older turns once the re-sent "old context" grows
+  // costly (token-based, not a fixed turn count). Re-prompt only after another budget's
+  // worth of growth; store the token level so a decline isn't re-nagged every turn.
+  if (currentChat && turns.length) {
+    const fold = foldableStats();
+    const lastHint = currentChat.compactHintAt || 0;
+    if (fold.turns >= COMPACT_MIN && fold.tokens >= COMPACT_TOKEN_BUDGET && fold.tokens - lastHint >= COMPACT_TOKEN_BUDGET) {
+      const choice = await showCompactionPrompt(fold.tokens);
+      if (choice === 'compact') {
+        const ok = await runCompaction(signal);
+        if (signal.aborted) return;
+        if (!ok) currentChat.compactHintAt = fold.tokens; // couldn't compact — don't nag every turn
+      } else {
+        currentChat.compactHintAt = fold.tokens;
+      }
+    }
+  }
+
   // snapshot models meta for stable historical rendering
   const modelsSnap = {};
   for (const m of active) modelsSnap[m.id] = { id: m.id, type: m.type, label: m.label, model: m.model };
 
-  const masterEnabled = settings.masterEnabled &&
+  let masterEnabled = settings.masterEnabled &&
     active.some((m) => m.id === settings.masterId);
   const masterModel = active.find((m) => m.id === settings.masterId);
+
+  // If the master model has no API key, its summary can only fail. Rather than make the
+  // user wait for every model and then hit an error card, quietly skip the master for
+  // THIS turn (auto-off) and tell them why — add the key and it works next time.
+  if (masterEnabled && masterModel && masterModel.type !== 'local' && !masterModel.apiKey) {
+    masterEnabled = false;
+    showInlineNotice('👑 마스터 모델의 API 키가 없어 이번 답변은 요약 없이 진행합니다. ⚙️ 설정에서 키를 넣으면 다음부터 자동 요약됩니다.');
+  }
   if (masterEnabled) modelsSnap[masterModel.id] = { id: masterModel.id, type: masterModel.type, label: masterModel.label, model: masterModel.model };
 
   const turn = {
@@ -2087,20 +2847,26 @@ async function send() {
     master: masterEnabled ? { status: 'pending', text: '' } : null,
   };
   turns.push(turn);
-  await addTurn(session.key, turn, session.id);
+  try {
+    await addTurn(session.key, turn, session.id);
+  } catch (e) {
+    turns.pop();
+    renderMessages();
+    alert(String((e && e.message) || e));
+    return;
+  }
   scheduleSync();
 
   promptInput.value = '';
   clearAttachments();
   autoGrow();
   renderMessages();
-  setSending(true);
-
-  activeController = new AbortController();
-  const signal = activeController.signal;
 
   // Fan-out to all models in parallel
   await Promise.allSettled(active.map((m) => runModel(turn, m, signal)));
+
+  // Master off → surface the client-side ensemble signal (agreement bar + 교차검증) now.
+  if (!masterEnabled) renderMessages();
 
   // Master aggregation after all answers
   let didEarlyMaster = false;
@@ -2120,14 +2886,13 @@ async function send() {
         await runMaster(turn, masterModel, active, signal);
       } else {
         didEarlyMaster = true;
-        // 먼저 현재 모델 상태 저장
+        // 먼저 현재 모델 상태를 저장하고, 팝업이 닫힐 때까지 전송 상태를 유지한다.
         await updateTurn(session.key, turn, session.id);
-        showMasterModelSelector(turn, masterModel, completed, async (sel) => {
-          if (sel.length > 0) {
-            await runMaster(turn, masterModel, sel, signal);
-            await updateTurn(session.key, turn, session.id);
-          }
-        });
+        const sel = await showMasterModelSelector(turn, masterModel, completed);
+        if (sel && sel.selected.length > 0) {
+          await runMaster(turn, sel.aggregator, sel.selected, signal);
+          await updateTurn(session.key, turn, session.id);
+        }
       }
     }
   } else if (masterEnabled && signal.aborted && turn.master?.status === 'pending') {
@@ -2139,9 +2904,11 @@ async function send() {
   if (!didEarlyMaster && (!turn.master || turn.master.status !== 'done')) {
     await updateTurn(session.key, turn, session.id);
   }
-  setSending(false);
-  activeController = null;
-  scheduleSync();
+  } finally {
+    setSending(false);
+    activeController = null;
+    scheduleSync();
+  }
 }
 
 async function runModel(turn, model, signal) {
@@ -2184,12 +2951,15 @@ async function runModel(turn, model, signal) {
 
   try {
     const messages = buildHistory(model, turn);
-    resp.promptTokens = estimateTokens(messages.map((m) => m.content || '').join('\n'));
+    const imgCount = messages.reduce((n, m) => n + (Array.isArray(m.images) ? m.images.length : 0), 0);
+    resp.promptTokens = estimateTokens(messages.map((m) => m.content || '').join('\n'))
+      + imgCount * IMAGE_TOKEN_ESTIMATE;
     const useSearch = !!turn.webSearch && supportsWebSearch(model);
 
     const streamP = streamChat(model, messages, {
       signal,
       webSearch: useSearch,
+      maxTokens: settings.maxTokens,
       onCitations: model.type === 'local' ? undefined : (urls) => { resp.citations = urls; },
       onChunk: (_chunk, fullText) => {
         if (resp.status !== 'streaming') return;
@@ -2239,8 +3009,10 @@ async function runModel(turn, model, signal) {
     });
 
     // Race to unblock caller for early/partial master even if a stream hangs forever.
-    const timeoutP = timeoutMs > 0 ? new Promise(r => setTimeout(r, timeoutMs)) : Promise.resolve();
+    let raceTimer = null;
+    const timeoutP = timeoutMs > 0 ? new Promise((r) => { raceTimer = setTimeout(r, timeoutMs); }) : Promise.resolve();
     await Promise.race([wrapped, timeoutP]);
+    if (raceTimer) { clearTimeout(raceTimer); raceTimer = null; }
 
     if (responseTimeout) {
       clearTimeout(responseTimeout);
@@ -2289,6 +3061,7 @@ async function runMaster(turn, master, modelsForBlock, signal) {
     // Already running a master; ignore duplicate/early re-call (e.g. race between timeout and post-send).
     return;
   }
+  turn.master.by = master.id;  // which model actually aggregated (may differ from masterId on substitution)
   turn.master.status = 'collecting';
   turn.master.text = '';
   turn.master.error = undefined;
@@ -2321,11 +3094,17 @@ async function runMaster(turn, master, modelsForBlock, signal) {
         if (completed.length > 0) {
           const mst = settings.models.find((m) => m.id === turn.masterId) || turn.models?.[turn.masterId];
           if (mst) {
-            showMasterModelSelector(turn, mst, completed, async (sel) => {
-              if (sel.length > 0) {
-                const sig = activeController ? activeController.signal : new AbortController().signal;
-                await runMaster(turn, mst, sel, sig);
+            showMasterModelSelector(turn, mst, completed).then(async (sel) => {
+              if (!sel || sel.selected.length === 0) return;
+              if (activeController) { alert('진행 중인 작업이 끝난 뒤 다시 시도해주세요.'); return; }
+              activeController = new AbortController();
+              setSending(true);
+              try {
+                await runMaster(turn, sel.aggregator, sel.selected, activeController.signal);
                 await updateTurn(session.key, turn, session.id);
+              } finally {
+                setSending(false);
+                activeController = null;
               }
             });
           }
@@ -2334,8 +3113,13 @@ async function runMaster(turn, master, modelsForBlock, signal) {
     }, timeoutMs);
   }
 
-  // Build aggregation input from completed answers (can be partial selected)
-  let block = `[질문]\n${turn.user}\n\n[각 모델의 답변]\n`;
+  // Aggregation input: optional previous official synthesis + this question + this-turn answers.
+  const prevMaster = latestSuccessfulMasterBefore(turn);
+  let block = '';
+  if (prevMaster) {
+    block += '[이전 공식 종합 — 참고]\n' + prevMaster + '\n\n';
+  }
+  block += `[질문]\n${turn.user}\n\n[각 모델의 답변]\n`;
   for (const m of modelsForBlock) {
     const r = turn.responses[m.id];
     if (r && r.status === 'done' && r.text) {
@@ -2343,35 +3127,10 @@ async function runMaster(turn, master, modelsForBlock, signal) {
     }
   }
 
-  const instruction =
-    '당신은 여러 AI의 답변을 종합하는 편집자입니다. 아래 답변들을 바탕으로 ' +
-    "가장 정확하고 유용한 '하나의 최종 답변'을 작성하세요. 각 모델의 주요 내용, 핵심 근거, 구체적인 예시나 세부 사항을 적절히 포함하여, 너무 짧고 간결하게 요약하지 말고 충분히 자세하고 포괄적으로 작성하세요. " +
-    "그런 다음 마지막에 '### 소수 의견' 섹션을 추가해, 다른 모델들과 눈에 띄게 다른 주장을 한 모델이 있으면 " +
-    '어떤 모델이 무엇을 다르게 말했는지 1~3줄로 요약하세요. 의미 있는 차이가 없으면 ' +
-    "'특이한 소수 의견 없음'이라고 적으세요.";
-
   const messages = [];
-
-  const chatPrompt = currentChat?.chatPrompt?.trim() || '';
-  if (chatPrompt) {
-    // Per-chat prompt present → use only this, ignore global customPrompt entirely
-    messages.push({ role: 'system', content: chatPrompt });
-  } else if (settings.customPrompt.trim()) {
-    messages.push({ role: 'system', content: settings.customPrompt.trim() });
-  }
-
-  // Rich formatting: respect per-chat explicit choice (checkbox directly controls API inclusion)
-  // When enabled, RICH_STYLE_INSTRUCTION is sent before the master instruction,
-  // so the summary will also be written with emojis, tables, structure etc.
-  const chatRich = currentChat && (currentChat.chatRichStyle === true || currentChat.chatRichStyle === false)
-    ? currentChat.chatRichStyle
-    : null;
-  const effectiveRich = chatRich !== null ? chatRich : settings.richStyle;
-  if (effectiveRich !== false) {
-    messages.push({ role: 'system', content: RICH_STYLE_INSTRUCTION });
-  }
-
-  messages.push({ role: 'system', content: instruction });
+  // Exclusive taste + RICH (no model-continuity L0), then master editor L0 instruction.
+  pushSystemLayers(messages, 'master');
+  messages.push({ role: 'system', content: MASTER_INSTRUCTION });
   messages.push({ role: 'user', content: block });
   turn.master.promptTokens = estimateTokens(messages.map((m) => m.content).join('\n'));
 
@@ -2381,6 +3140,7 @@ async function runMaster(turn, master, modelsForBlock, signal) {
     const wrapped = new Promise((resolve) => {
       const streamP = streamChat(master, messages, {
         signal,
+        maxTokens: settings.maxTokens,
         onChunk: (_c, fullText) => {
           if (turn.master.status !== 'streaming') return;
           if (masterTimeout) {
@@ -2414,8 +3174,10 @@ async function runMaster(turn, master, modelsForBlock, signal) {
       });
     });
 
-    const timeoutP = timeoutMs > 0 ? new Promise(r => setTimeout(r, timeoutMs)) : Promise.resolve();
+    let raceTimer = null;
+    const timeoutP = timeoutMs > 0 ? new Promise((r) => { raceTimer = setTimeout(r, timeoutMs); }) : Promise.resolve();
     await Promise.race([wrapped, timeoutP]);
+    if (raceTimer) { clearTimeout(raceTimer); raceTimer = null; }
   } catch (err) {
     if (masterTimeout) {
       clearTimeout(masterTimeout);
@@ -2489,6 +3251,14 @@ function buildMarkdownExport() {
   lines.push(`# ${currentChat?.title || '대화'}`);
   lines.push('');
   for (const t of turns) {
+    if (t.kind === 'compaction') {
+      lines.push(`## 🗜 이전 대화 요약 (${t.compactedCount || ''}개 압축)`);
+      lines.push(t.summary || '');
+      lines.push('');
+      lines.push('---');
+      lines.push('');
+      continue;
+    }
     lines.push(`## 🙋 질문`);
     if (t.attachments?.length) {
       lines.push(`*첨부: ${t.attachments.map((a) => a.name).join(', ')}*`);
@@ -2505,9 +3275,15 @@ function buildMarkdownExport() {
       lines.push('');
     }
     if (t.masterEnabled && t.master) {
-      const mm = t.models?.[t.masterId];
+      const mm = t.models?.[t.master.by || t.masterId];
       lines.push(`### 👑 마스터 요약${mm ? ` · ${mm.label}` : ''}`);
       lines.push(t.master.status === 'error' ? `> ⚠ ${t.master.error || '오류'}` : (t.master.text || ''));
+      lines.push('');
+    }
+    if (t.crossCheck && t.crossCheck.text) {
+      const cm = t.models?.[t.crossCheck.by];
+      lines.push(`### 🔍 교차검증${cm ? ` · ${cm.label}` : ''}`);
+      lines.push(t.crossCheck.status === 'error' ? `> ⚠ ${t.crossCheck.error || '오류'}` : (t.crossCheck.text || ''));
       lines.push('');
     }
     lines.push('---');
@@ -2565,6 +3341,8 @@ function openSettings() {
   if (richEl) richEl.checked = settings.richStyle !== false;
   const timeoutInput = $('#timeoutInput');
   if (timeoutInput) timeoutInput.value = Math.round((settings.timeoutMs || 60000) / 1000);
+  const maxTokInput = $('#maxTokensInput');
+  if (maxTokInput) maxTokInput.value = settings.maxTokens || 8192;
   $('#resetUserLabel').textContent = session ? `'${session.displayName}'` : '현재 사용자';
   renderModelSettings();
   refreshStorageInfo();
@@ -2845,6 +3623,11 @@ function saveSettingsFromForm() {
     const secs = parseInt(timeoutInput.value, 10);
     settings.timeoutMs = Number.isFinite(secs) && secs >= 0 ? secs * 1000 : 60000;
   }
+  const maxTokInput = $('#maxTokensInput');
+  if (maxTokInput) {
+    const mt = parseInt(maxTokInput.value, 10);
+    settings.maxTokens = Number.isFinite(mt) && mt >= 256 ? mt : 8192;
+  }
   readModelForm();
   persistSettings();
   masterToggle.checked = settings.masterEnabled;
@@ -2896,6 +3679,8 @@ async function resetEverything() {
   if (richEl) richEl.checked = settings.richStyle !== false;
   const timeoutInput = $('#timeoutInput');
   if (timeoutInput) timeoutInput.value = Math.round((settings.timeoutMs || 60000) / 1000);
+  const maxTokInput = $('#maxTokensInput');
+  if (maxTokInput) maxTokInput.value = settings.maxTokens || 8192;
   renderModelSettings();
   refreshStorageInfo();
   $('#saveHint').textContent = '초기화 완료 ✓';
@@ -3063,6 +3848,7 @@ async function changeOnlinePassword(cur, nw) {
     kdfIterations: iterations,
     authToken: newAuthToken,
   });
+  if (!session) throw new Error('세션이 종료되어 비밀번호 변경을 완료하지 못했습니다. 새 비밀번호로 다시 로그인해주세요.');
   session.key = newKey;
   session.authToken = newAuthToken;
   session.kdfSalt = newKdfSalt;
@@ -3116,6 +3902,7 @@ async function exportBackup() {
         customPrompt: settings.customPrompt,
         richStyle: settings.richStyle,
         timeoutMs: settings.timeoutMs,
+        maxTokens: settings.maxTokens,
         masterId: settings.masterId,
         masterEnabled: settings.masterEnabled,
         viewMode: settings.viewMode,
@@ -3124,6 +3911,7 @@ async function exportBackup() {
         autoLockMinutes: settings.autoLockMinutes,
         models: settings.models,
         usage: settings.usage || {},
+        usageSince: settings.usageSince,
         prompts: settings.prompts || [],
       },
       // legacy top-level fields kept for backward-compat with older backups
@@ -3206,8 +3994,8 @@ async function importBackup(e) {
         const next = { ...settings };
         if (snap) {
           // copy every known setting field that's present
-          for (const k of ['customPrompt', 'richStyle', 'timeoutMs', 'masterId', 'masterEnabled', 'viewMode',
-                            'webSearchEnabled', 'showCost', 'autoLockMinutes', 'models', 'usage', 'prompts']) {
+          for (const k of ['customPrompt', 'richStyle', 'timeoutMs', 'maxTokens', 'masterId', 'masterEnabled', 'viewMode',
+                            'webSearchEnabled', 'showCost', 'autoLockMinutes', 'models', 'usage', 'usageSince', 'prompts']) {
             if (snap[k] !== undefined) next[k] = snap[k];
           }
         } else {

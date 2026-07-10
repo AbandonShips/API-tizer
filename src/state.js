@@ -13,19 +13,15 @@ export const MAX_LOCAL = 3;
 
 export const MODEL_PRESETS = {
   openai: [
-    { model: 'gpt-5.5', label: 'GPT-5.5', priceIn: 5, priceOut: 30, vision: true },
-    { model: 'gpt-5.5-pro', label: 'GPT-5.5 Pro', priceIn: 30, priceOut: 180, vision: true },
-    { model: 'gpt-5.4', label: 'GPT-5.4', priceIn: 2.5, priceOut: 15, vision: true },
-    { model: 'gpt-5.4-mini', label: 'GPT-5.4 Mini', priceIn: 0.75, priceOut: 4.5, vision: true },
-    { model: 'gpt-5.4-nano', label: 'GPT-5.4 Nano', priceIn: 0.2, priceOut: 1.25, vision: true },
-    { model: 'chat-latest', label: 'ChatGPT Latest', priceIn: 5, priceOut: 30, vision: true },
+    { model: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', priceIn: 5, priceOut: 30, vision: true },
+    { model: 'gpt-5.6-terra', label: 'GPT-5.6 Terra', priceIn: 2.5, priceOut: 15, vision: true },
+    { model: 'gpt-5.6-luna', label: 'GPT-5.6 Luna', priceIn: 1, priceOut: 6, vision: true },
   ],
   anthropic: [
     { model: 'claude-fable-5', label: 'Claude Fable 5', priceIn: 10, priceOut: 50, vision: true },
     { model: 'claude-opus-4-8', label: 'Claude Opus 4.8', priceIn: 5, priceOut: 25, vision: true },
-    { model: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', priceIn: 3, priceOut: 15, vision: true },
+    { model: 'claude-sonnet-5', label: 'Claude Sonnet 5', priceIn: 3, priceOut: 15, vision: true },
     { model: 'claude-haiku-4-5', label: 'Claude Haiku 4.5', priceIn: 1, priceOut: 5, vision: true },
-    { model: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 Snapshot', priceIn: 1, priceOut: 5, vision: true },
   ],
   gemini: [
     { model: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash', priceIn: 1.5, priceOut: 9, vision: true },
@@ -37,8 +33,8 @@ export const MODEL_PRESETS = {
     { model: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash-Lite', priceIn: 0.1, priceOut: 0.4, vision: true },
   ],
   grok: [
+    { model: 'grok-4.5', label: 'Grok 4.5', priceIn: 2, priceOut: 6, vision: true },
     { model: 'grok-4.3', label: 'Grok 4.3', priceIn: 1.25, priceOut: 2.5, vision: true },
-    { model: 'grok-build-0.1', label: 'Grok Build 0.1', priceIn: 1, priceOut: 2, vision: false },
   ],
 };
 
@@ -51,6 +47,7 @@ export function defaultSettings() {
     customPrompt: '',
     richStyle: true,         // inject rich formatting instruction (emojis, tables, structure) so API responses feel closer to web ChatGPT
     timeoutMs: 60000,        // timeout for individual model responses and master summary (in ms). 0 or falsy to disable.
+    maxTokens: 8192,         // max output tokens per response. Anthropic requires an explicit cap (was hardcoded 4096, which truncated long master summaries); other providers keep their own default.
     masterId: 'openai',
     masterEnabled: false,
     viewMode: 'split', // 'split' | 'unified'
@@ -59,8 +56,8 @@ export function defaultSettings() {
     autoLockMinutes: 60,     // idle auto-logout (0 = off)
     prompts: [],             // saved prompt library: [{ id, title, text }]
     models: [
-      { id: 'openai', type: 'openai', label: 'ChatGPT', apiKey: '', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.4-mini', enabled: true, vision: true, priceIn: 0.75, priceOut: 4.5 },
-      { id: 'anthropic', type: 'anthropic', label: 'Claude', apiKey: '', baseUrl: 'https://api.anthropic.com/v1', model: 'claude-sonnet-4-6', enabled: true, vision: true, priceIn: 3, priceOut: 15 },
+      { id: 'openai', type: 'openai', label: 'ChatGPT', apiKey: '', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.6-luna', enabled: true, vision: true, priceIn: 1, priceOut: 6 },
+      { id: 'anthropic', type: 'anthropic', label: 'Claude', apiKey: '', baseUrl: 'https://api.anthropic.com/v1', model: 'claude-sonnet-5', enabled: true, vision: true, priceIn: 3, priceOut: 15 },
       { id: 'gemini', type: 'gemini', label: 'Gemini', apiKey: '', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-3.5-flash', enabled: true, vision: true, priceIn: 1.5, priceOut: 9 },
       { id: 'grok', type: 'grok', label: 'Grok', apiKey: '', baseUrl: 'https://api.x.ai/v1', model: 'grok-4.3', enabled: true, vision: true, priceIn: 1.25, priceOut: 2.5 },
     ],
@@ -113,11 +110,18 @@ export function estimateTokens(text) {
   return Math.max(1, Math.round(text.length / 3));
 }
 
+// Rough per-image prompt-token estimate for vision inputs. Real cost depends on
+// each provider's tiling; ~1000 is a reasonable mixed default for display only.
+export const IMAGE_TOKEN_ESTIMATE = 1000;
+
 // Approximate USD pricing per 1M tokens (input, output). Matched by substring
 // of the model name; falls back to null (cost hidden) for unknown models.
 // Order matters: more specific patterns first.
 const PRICING = [
   // OpenAI
+  [/gpt-5\.6-terra/i, 2.50, 15.00],
+  [/gpt-5\.6-luna/i, 1.00, 6.00],
+  [/gpt-5\.6-sol|gpt-5\.6/i, 5.00, 30.00],
   [/gpt-5\.5-pro/i, 30.00, 180.00],
   [/gpt-5\.5/i, 5.00, 30.00],
   [/gpt-5\.4-pro/i, 30.00, 180.00],
@@ -144,7 +148,7 @@ const PRICING = [
   [/gemini.*flash/i, 1.50, 9.00],
   [/gemini.*pro/i, 1.25, 10.00],
   // xAI Grok
-  [/grok-build-0\.1/i, 1.00, 2.00],
+  [/grok-4\.5/i, 2.00, 6.00],
   [/grok-4\.3|grok-4|grok-3/i, 1.25, 2.50],
   [/grok-2|grok/i, 2.00, 10.00],
 ];
