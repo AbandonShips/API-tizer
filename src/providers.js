@@ -354,27 +354,35 @@ function combineErrors(errs) {
   return `${errs.length}회 시도 모두 실패 · ` + distinct.map((e, i) => `(${i + 1}) ${e}`).join(' · ');
 }
 
+const EMPTY_RESP = '빈 응답을 받았습니다 (empty response)';
+
 export async function streamChat(model, messages, opts = {}) {
   const maxAttempts = 3; // up to 2 retries on transient failures — for ANY provider (incl. local)
   let emitted = false;
   const wrapped = { ...opts, onChunk: (d, f) => { emitted = true; opts.onChunk?.(d, f); } };
   const errs = [];
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let err = null;
     try {
-      return await streamChatOnce(model, messages, wrapped); // success (even after earlier errors) → return normally
-    } catch (err) {
-      const msg = String(err?.message || err);
-      errs.push(msg);
-      // Stop once tokens started (avoid duplicates), on abort, on the last attempt, or for a
-      // non-transient error (401/400/…). When all retries are exhausted with multiple distinct
-      // errors, surface them together; otherwise surface the single definitive error.
-      if (emitted || opts.signal?.aborted || attempt >= maxAttempts || !RETRYABLE_ERR.test(msg)) {
-        throw (attempt >= maxAttempts && errs.length > 1) ? new Error(combineErrors(errs)) : err;
-      }
-      const delay = (attempt === 1 ? 3000 : 5000) + Math.floor(Math.random() * 1000); // ~3s then ~5s (+jitter)
-      opts.onRetry?.(attempt, delay);
-      await retryDelay(delay, opts.signal);
+      const result = await streamChatOnce(model, messages, wrapped);
+      if (result && result.trim()) return result; // success (even after earlier errors) → return normally
+      // Some servers reply 200 with an empty stream during hiccups (no error code). Treat a
+      // blank result as a transient failure so it retries too — instead of silently showing nothing.
+      err = new Error(EMPTY_RESP);
+    } catch (e) {
+      err = e;
     }
+    const msg = String(err?.message || err);
+    const retryable = msg === EMPTY_RESP || RETRYABLE_ERR.test(msg);
+    errs.push(msg);
+    // Stop once tokens started (avoid duplicates), on abort, on the last attempt, or for a
+    // non-transient error. When retries are exhausted with multiple distinct errors, combine.
+    if (emitted || opts.signal?.aborted || attempt >= maxAttempts || !retryable) {
+      throw (attempt >= maxAttempts && errs.length > 1) ? new Error(combineErrors(errs)) : err;
+    }
+    const delay = (attempt === 1 ? 3000 : 5000) + Math.floor(Math.random() * 1000); // ~3s then ~5s (+jitter)
+    opts.onRetry?.(attempt, delay);
+    await retryDelay(delay, opts.signal);
   }
   throw new Error(combineErrors(errs)); // unreachable (loop always returns/throws) — keeps control flow total
 }

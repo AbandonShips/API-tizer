@@ -16,6 +16,12 @@ export const MODEL_PRESETS = {
     { model: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', priceIn: 5, priceOut: 30, vision: true },
     { model: 'gpt-5.6-terra', label: 'GPT-5.6 Terra', priceIn: 2.5, priceOut: 15, vision: true },
     { model: 'gpt-5.6-luna', label: 'GPT-5.6 Luna', priceIn: 1, priceOut: 6, vision: true },
+    { model: 'gpt-5.5', label: 'GPT-5.5', priceIn: 5, priceOut: 30, vision: true },
+    { model: 'gpt-5.5-pro', label: 'GPT-5.5 Pro', priceIn: 30, priceOut: 180, vision: true },
+    { model: 'gpt-5.4', label: 'GPT-5.4', priceIn: 2.5, priceOut: 15, vision: true },
+    { model: 'gpt-5.4-pro', label: 'GPT-5.4 Pro', priceIn: 30, priceOut: 180, vision: true },
+    { model: 'gpt-5.4-mini', label: 'GPT-5.4 mini', priceIn: 0.75, priceOut: 4.5, vision: true },
+    { model: 'gpt-5.4-nano', label: 'GPT-5.4 nano', priceIn: 0.2, priceOut: 1.25, vision: true },
   ],
   anthropic: [
     { model: 'claude-fable-5', label: 'Claude Fable 5', priceIn: 10, priceOut: 50, vision: true },

@@ -1091,8 +1091,13 @@ function persistSettings() {
 
 function autoGrow() {
   const minHeight = parseFloat(getComputedStyle(promptInput).minHeight) || 0;
+  const maxHeight = 200; // keep in sync with #promptInput max-height in CSS
   promptInput.style.height = 'auto';
-  promptInput.style.height = Math.max(minHeight, Math.min(promptInput.scrollHeight, 200)) + 'px';
+  const full = promptInput.scrollHeight;
+  promptInput.style.height = Math.max(minHeight, Math.min(full, maxHeight)) + 'px';
+  // Grow with content up to maxHeight, then stop growing and show a scrollbar so the clipped
+  // top is reachable by mouse wheel / touch (not only by moving the caret up).
+  promptInput.style.overflowY = full > maxHeight ? 'auto' : 'hidden';
 }
 
 // =====================================================================
@@ -2892,6 +2897,16 @@ async function send() {
         refreshCard(turn, 'master', turn.master);
       } else if (completed.length === active.length) {
         await runMaster(turn, masterModel, active, signal);
+        // Summary failed (server error / blank) even after auto-retries, and it wasn't a timeout
+        // (the timeout path already offers this popup) → offer to summarise with another completed
+        // model, same as the timeout flow.
+        if (!signal.aborted && turn.master?.status === 'error' && !String(turn.master.error || '').includes('타임아웃')) {
+          const done = turnModels(turn).filter((m) => { const r = turn.responses?.[m.id]; return r && r.status === 'done' && r.text; });
+          if (done.length > 0) {
+            const sel = await showMasterModelSelector(turn, masterModel, done);
+            if (sel && sel.selected.length > 0) { await runMaster(turn, sel.aggregator, sel.selected, signal); }
+          }
+        }
       } else {
         didEarlyMaster = true;
         // 먼저 현재 모델 상태를 저장하고, 팝업이 닫힐 때까지 전송 상태를 유지한다.
