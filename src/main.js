@@ -1963,6 +1963,9 @@ async function triggerCrossCheck(turn) {
 }
 
 async function runCrossCheck(turn, aggregator, selectedModels, signal) {
+  // Selector candidates come from turn.models snapshots (no apiKey) — re-resolve the live
+  // model by id so a model that already answered isn't wrongly rejected as "no API key".
+  aggregator = settings.models.find((m) => m.id === aggregator.id) || aggregator;
   if (aggregator.type !== 'local' && !aggregator.apiKey) {
     turn.crossCheck = { status: 'error', error: '교차검증 모델 API 키가 없습니다.', text: '', by: aggregator.id };
     renderMessages({ keepScroll: true });
@@ -2019,8 +2022,13 @@ async function runCrossCheck(turn, aggregator, selectedModels, signal) {
       streamChat(aggregator, messages, {
         signal,
         maxTokens: settings.maxTokens,
+        onRetry: (attempt, delay) => {
+          if (turn.crossCheck !== cc || cc.status !== 'streaming' || cc.text) return;
+          const b = document.getElementById(`body-${turn.id}-crosscheck`);
+          if (b) { b.classList.remove('streaming'); b.innerHTML = `<span class="card-status status-wait">서버 혼잡 — ${Math.round(delay / 1000)}초 후 자동 재시도… (${attempt}/2)</span>`; }
+        },
         onChunk: (_c, full) => {
-          if (cc.status !== 'streaming') return;
+          if (turn.crossCheck !== cc || cc.status !== 'streaming') return; // superseded by a newer run
           if (ccTimeout) { clearTimeout(ccTimeout); ccTimeout = null; }
           cc.text = full;
           const b = document.getElementById(`body-${turn.id}-crosscheck`);
@@ -2028,7 +2036,7 @@ async function runCrossCheck(turn, aggregator, selectedModels, signal) {
         },
       }).then((full) => {
         if (ccTimeout) { clearTimeout(ccTimeout); ccTimeout = null; }
-        if (cc.status === 'streaming') { cc.text = full; cc.status = 'done'; }
+        if (turn.crossCheck === cc && cc.status === 'streaming') { cc.text = full; cc.status = 'done'; }
         resolve();
       }).catch((err) => {
         if (ccTimeout) { clearTimeout(ccTimeout); ccTimeout = null; }
@@ -2929,6 +2937,9 @@ async function runModel(turn, model, signal) {
   resp.error = undefined;
   resp.elapsedMs = undefined;
   resp.citations = undefined;
+  // Generation token: a late-finishing stream from a superseded run (e.g. this model timed
+  // out and was then regenerated) must not clobber the newer response for the same model.
+  const respGen = (resp._gen = (resp._gen || 0) + 1);
   const startedAt = performance.now();
   refreshCard(turn, model.id, resp);
   refreshMasterProgress(turn);
@@ -2960,9 +2971,14 @@ async function runModel(turn, model, signal) {
       signal,
       webSearch: useSearch,
       maxTokens: settings.maxTokens,
-      onCitations: model.type === 'local' ? undefined : (urls) => { resp.citations = urls; },
+      onRetry: (attempt, delay) => {
+        if (resp._gen !== respGen || resp.status !== 'streaming' || resp.text) return;
+        const b = document.getElementById(`body-${turn.id}-${model.id}`);
+        if (b) { b.classList.remove('streaming'); b.innerHTML = `<span class="card-status status-wait">서버 혼잡 — ${Math.round(delay / 1000)}초 후 자동 재시도… (${attempt}/2)</span>`; }
+      },
+      onCitations: model.type === 'local' ? undefined : (urls) => { if (resp._gen === respGen) resp.citations = urls; },
       onChunk: (_chunk, fullText) => {
-        if (resp.status !== 'streaming') return;
+        if (resp._gen !== respGen || resp.status !== 'streaming') return;
         if (responseTimeout) {
           clearTimeout(responseTimeout);
           responseTimeout = null;
@@ -2983,6 +2999,7 @@ async function runModel(turn, model, signal) {
           clearTimeout(responseTimeout);
           responseTimeout = null;
         }
+        if (resp._gen !== respGen) { resolve(); return; } // superseded by a newer run for this model
         if (resp.status === 'streaming') {
           resp.status = 'done';
           resp.text = full;
@@ -3002,6 +3019,7 @@ async function runModel(turn, model, signal) {
           clearTimeout(responseTimeout);
           responseTimeout = null;
         }
+        if (resp._gen !== respGen) { resolve(); return; } // superseded by a newer run for this model
         if (signal.aborted) { resp.status = resp.text ? 'done' : 'error'; resp.error = '중단됨'; }
         else { resp.status = 'error'; resp.error = String(err.message || err); }
         resolve();
@@ -3052,6 +3070,11 @@ async function runModel(turn, model, signal) {
 
 async function runMaster(turn, master, modelsForBlock, signal) {
   if (!turn.master) turn.master = { status: 'pending', text: '' };
+  // turn.models snapshots intentionally omit apiKey (they are persisted per turn), so an
+  // aggregator picked from the early-summary selector arrives key-less. Re-resolve the live
+  // model by id so a model that already answered individually isn't wrongly rejected as
+  // "no API key" (and so the actual stream gets the real key).
+  master = settings.models.find((m) => m.id === master.id) || master;
   if (master.type !== 'local' && !master.apiKey) {
     turn.master = { status: 'error', error: '마스터 모델 API 키가 없습니다.', text: '' };
     refreshCard(turn, 'master', turn.master);
@@ -3062,6 +3085,10 @@ async function runMaster(turn, master, modelsForBlock, signal) {
     return;
   }
   turn.master.by = master.id;  // which model actually aggregated (may differ from masterId on substitution)
+  // Generation token: if this master run is superseded (e.g. it timed out and the user picked
+  // a substitute aggregator), a stale late-finishing stream must not clobber the newer run's
+  // summary. The stream callbacks below bail out when the generation no longer matches.
+  const masterGen = (turn._masterGen = (turn._masterGen || 0) + 1);
   turn.master.status = 'collecting';
   turn.master.text = '';
   turn.master.error = undefined;
@@ -3141,8 +3168,13 @@ async function runMaster(turn, master, modelsForBlock, signal) {
       const streamP = streamChat(master, messages, {
         signal,
         maxTokens: settings.maxTokens,
+        onRetry: (attempt, delay) => {
+          if (turn._masterGen !== masterGen || turn.master.status !== 'streaming' || turn.master.text) return;
+          const b = document.getElementById(`body-${turn.id}-master`);
+          if (b) { b.classList.remove('streaming'); b.innerHTML = `<span class="card-status status-wait">서버 혼잡 — ${Math.round(delay / 1000)}초 후 자동 재시도… (${attempt}/2)</span>`; }
+        },
         onChunk: (_c, fullText) => {
-          if (turn.master.status !== 'streaming') return;
+          if (turn._masterGen !== masterGen || turn.master.status !== 'streaming') return;
           if (masterTimeout) {
             clearTimeout(masterTimeout);
             masterTimeout = null;
@@ -3158,7 +3190,7 @@ async function runMaster(turn, master, modelsForBlock, signal) {
           clearTimeout(masterTimeout);
           masterTimeout = null;
         }
-        if (turn.master.status === 'streaming') {
+        if (turn._masterGen === masterGen && turn.master.status === 'streaming') {
           turn.master.text = full;
           turn.master.status = 'done';
         }
@@ -3168,6 +3200,7 @@ async function runMaster(turn, master, modelsForBlock, signal) {
           clearTimeout(masterTimeout);
           masterTimeout = null;
         }
+        if (turn._masterGen !== masterGen) { resolve(); return; } // superseded by a newer master run
         if (signal.aborted) { turn.master.status = turn.master.text ? 'done' : 'error'; turn.master.error = '중단됨'; }
         else { turn.master.status = 'error'; turn.master.error = String(err.message || err); }
         resolve();

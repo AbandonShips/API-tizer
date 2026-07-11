@@ -315,7 +315,7 @@ async function streamGemini(model, messages, { signal, onChunk, onCitations, web
   return full;
 }
 
-export function streamChat(model, messages, opts = {}) {
+function streamChatOnce(model, messages, opts = {}) {
   switch (model.type) {
     case 'anthropic': return streamAnthropic(model, messages, opts);
     case 'gemini': return streamGemini(model, messages, opts);
@@ -328,6 +328,55 @@ export function streamChat(model, messages, opts = {}) {
     case 'local':
     default: return streamOpenAICompatible(model, messages, opts);
   }
+}
+
+// Transient upstream hiccups — e.g. Gemini's "high demand" / "model is overloaded" (503) or
+// 429 rate limits — are common when a popular model (like gemini-3.5-flash) is busy, and they
+// clear on their own. These spikes are server-side (they hit paid tiers too), so auto-retry a
+// couple of times with a few seconds' backoff — but ONLY before any tokens have streamed (so
+// output is never duplicated), never on auth/bad-request errors, and never after the user Stops.
+const RETRYABLE_ERR = /HTTP (408|409|425|429|500|502|503|504|529)\b|overloaded|high demand|UNAVAILABLE|RESOURCE_EXHAUSTED|Failed to fetch|NetworkError|network error|ECONNRESET|ETIMEDOUT/i;
+
+function retryDelay(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(new DOMException('Aborted', 'AbortError')); return; }
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); }, { once: true });
+  });
+}
+
+// Combine per-attempt error messages: identical errors collapse to one; distinct errors are
+// listed in order so a "503 then 409 then 409" surfaces both causes to the user.
+function combineErrors(errs) {
+  const distinct = [];
+  for (const e of errs) if (!distinct.includes(e)) distinct.push(e);
+  if (distinct.length === 1) return distinct[0];
+  return `${errs.length}회 시도 모두 실패 · ` + distinct.map((e, i) => `(${i + 1}) ${e}`).join(' · ');
+}
+
+export async function streamChat(model, messages, opts = {}) {
+  const maxAttempts = 3; // up to 2 retries on transient failures — for ANY provider (incl. local)
+  let emitted = false;
+  const wrapped = { ...opts, onChunk: (d, f) => { emitted = true; opts.onChunk?.(d, f); } };
+  const errs = [];
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await streamChatOnce(model, messages, wrapped); // success (even after earlier errors) → return normally
+    } catch (err) {
+      const msg = String(err?.message || err);
+      errs.push(msg);
+      // Stop once tokens started (avoid duplicates), on abort, on the last attempt, or for a
+      // non-transient error (401/400/…). When all retries are exhausted with multiple distinct
+      // errors, surface them together; otherwise surface the single definitive error.
+      if (emitted || opts.signal?.aborted || attempt >= maxAttempts || !RETRYABLE_ERR.test(msg)) {
+        throw (attempt >= maxAttempts && errs.length > 1) ? new Error(combineErrors(errs)) : err;
+      }
+      const delay = (attempt === 1 ? 3000 : 5000) + Math.floor(Math.random() * 1000); // ~3s then ~5s (+jitter)
+      opts.onRetry?.(attempt, delay);
+      await retryDelay(delay, opts.signal);
+    }
+  }
+  throw new Error(combineErrors(errs)); // unreachable (loop always returns/throws) — keeps control flow total
 }
 
 // Which provider types support built-in web search in this app.
