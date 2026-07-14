@@ -1,6 +1,7 @@
 // Streaming chat adapters for each provider.
 // Common message format: [{ role: 'system'|'user'|'assistant', content }]
 // streamChat(model, messages, { signal, onChunk }) -> Promise<fullText>
+import { t } from './i18n.js';
 
 async function* sseLines(response) {
   const reader = response.body.getReader();
@@ -351,10 +352,10 @@ function combineErrors(errs) {
   const distinct = [];
   for (const e of errs) if (!distinct.includes(e)) distinct.push(e);
   if (distinct.length === 1) return distinct[0];
-  return `${errs.length}회 시도 모두 실패 · ` + distinct.map((e, i) => `(${i + 1}) ${e}`).join(' · ');
+  return t('ext.all_attempts_failed', { n: errs.length }) + ' · ' + distinct.map((e, i) => `(${i + 1}) ${e}`).join(' · ');
 }
 
-const EMPTY_RESP = '빈 응답을 받았습니다 (empty response)';
+const EMPTY_RESP = t('ext.empty_resp');
 
 export async function streamChat(model, messages, opts = {}) {
   const maxAttempts = 3; // up to 2 retries on transient failures — for ANY provider (incl. local)

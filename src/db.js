@@ -7,6 +7,7 @@
 // history stays fast: only the open chat is ever decrypted.
 
 import { encryptJSON, decryptJSON } from './crypto.js';
+import { t } from './i18n.js';
 
 const DB_NAME = 'apitizer';
 const DB_VERSION = 3;
@@ -116,14 +117,14 @@ export const uid = () =>
 function wrapWrite(promise) {
   return promise.catch((err) => {
     if (err && (err.name === 'QuotaExceededError' || /quota/i.test(String(err && err.message)))) {
-      throw new Error('브라우저 저장 공간이 가득 찼습니다. 오래된 채팅이나 큰 첨부 파일을 삭제해주세요.');
+      throw new Error(t('ext.storage_full'));
     }
     throw err;
   });
 }
 
 // ---- Chats ----
-export async function createChat(user, key, title = '새 채팅') {
+export async function createChat(user, key, title = t('chat.default_title')) {
   const createdAt = Date.now();
   const id = uid();
   const enc = await encryptJSON(key, { title, pinned: false, folder: '', chatPrompt: '', chatRichStyle: null });
@@ -139,7 +140,7 @@ export async function listChats(user, key) {
   const out = [];
   for (const r of rows) {
     if (r.deleted) continue; // hide tombstones
-    let meta = { title: '(복호화 실패)', pinned: false, folder: '', chatPrompt: '', chatRichStyle: null };
+    let meta = { title: t('ext.decrypt_fail'), pinned: false, folder: '', chatPrompt: '', chatRichStyle: null };
     try { meta = { pinned: false, folder: '', chatPrompt: '', chatRichStyle: null, ...(await decryptJSON(key, r.enc)) }; }
     catch { /* skip undecryptable */ }
     out.push({ id: r.id, title: meta.title, pinned: !!meta.pinned, folder: meta.folder || '', chatPrompt: meta.chatPrompt || '', chatRichStyle: (meta.chatRichStyle === true || meta.chatRichStyle === false) ? meta.chatRichStyle : null, createdAt: r.createdAt });
@@ -364,12 +365,12 @@ export async function exportUserData(user, key) {
 // Import previously exported chats for a user, re-encrypting with their key.
 // Returns the number of chats imported.
 export async function importUserData(user, key, chatsArray) {
-  if (!Array.isArray(chatsArray)) throw new Error('백업 형식이 올바르지 않습니다.');
+  if (!Array.isArray(chatsArray)) throw new Error(t('ext.bad_backup_format'));
   let count = 0;
   for (const c of chatsArray) {
     const newChatId = uid();
     const enc = await encryptJSON(key, {
-      title: c.title || '가져온 채팅', pinned: !!c.pinned, folder: c.folder || '',
+      title: c.title || t('ext.imported_chat'), pinned: !!c.pinned, folder: c.folder || '',
       chatPrompt: c.chatPrompt || '',
       chatRichStyle: (c.chatRichStyle === true || c.chatRichStyle === false) ? c.chatRichStyle : null,
     });

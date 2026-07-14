@@ -10,6 +10,7 @@ import {
   deriveSyncKeys,
 } from './crypto.js';
 import { authParams, serverSignup, serverLogin } from './sync.js';
+import { t } from './i18n.js';
 
 const USERS_KEY = 'apitizer.users.v1';
 const VERIFIER_TEXT = 'apitizer-verify-v1';
@@ -33,11 +34,11 @@ function normalizeId(username) {
 
 function passwordProblem(password) {
   const value = String(password || '');
-  if (value.length < MIN_PASSWORD_LENGTH) return `비밀번호는 ${MIN_PASSWORD_LENGTH}자 이상이어야 합니다.`;
+  if (value.length < MIN_PASSWORD_LENGTH) return t('ext.pw_min', { n: MIN_PASSWORD_LENGTH });
   const classes = [/[a-z]/, /[A-Z]/, /[0-9]/, /[^a-zA-Z0-9]/].filter((re) => re.test(value)).length;
-  if (value.length < 12 && classes < 3) return '비밀번호는 12자 미만이면 영문 대/소문자, 숫자, 특수문자 중 3종류 이상을 섞어주세요.';
-  if (/^(.)\1+$/.test(value)) return '반복 문자만으로 된 비밀번호는 사용할 수 없습니다.';
-  if (/password|1234|qwer|admin|apitizer/i.test(value)) return '추측하기 쉬운 단어가 포함된 비밀번호는 사용할 수 없습니다.';
+  if (value.length < 12 && classes < 3) return t('ext.pw_mix');
+  if (/^(.)\1+$/.test(value)) return t('ext.pw_repeat');
+  if (/password|1234|qwer|admin|apitizer/i.test(value)) return t('ext.pw_common');
   return '';
 }
 
@@ -48,13 +49,13 @@ export function getDisplayName(username) {
 export async function signup(username, password, options = {}) {
   const display = String(username || '').trim();
   const id = normalizeId(username);
-  if (!id) throw new Error('아이디를 입력하세요.');
-  if (id.length < 2) throw new Error('아이디는 2자 이상이어야 합니다.');
+  if (!id) throw new Error(t('ext.id_required'));
+  if (id.length < 2) throw new Error(t('ext.id_min'));
   const weak = passwordProblem(password);
   if (weak) throw new Error(weak);
 
   const users = loadUsers();
-  if (users[id]) throw new Error('이미 존재하는 아이디입니다.');
+  if (users[id]) throw new Error(t('ext.id_exists'));
 
   const salt = randomBytes(16);
   const iterations = PBKDF2_ITERATIONS;
@@ -73,14 +74,14 @@ export async function login(username, password, options = {}) {
   const id = normalizeId(username);
   const users = loadUsers();
   const rec = users[id];
-  if (!rec) throw new Error('존재하지 않는 아이디입니다.');
+  if (!rec) throw new Error(t('ext.id_not_found'));
 
   const key = await deriveKey(password, fromB64(rec.salt), rec.iterations || PBKDF2_ITERATIONS, !!options.extractable);
   try {
     const v = await decryptJSON(key, rec.verifier);
     if (v !== VERIFIER_TEXT) throw new Error('mismatch');
   } catch {
-    throw new Error('비밀번호가 올바르지 않습니다.');
+    throw new Error(t('ext.pw_wrong'));
   }
   return { id, displayName: rec.displayName, key };
 }
@@ -101,7 +102,7 @@ export async function preparePasswordChange(id, currentPassword, newPassword) {
   const nid = normalizeId(id);
   const users = loadUsers();
   const rec = users[nid];
-  if (!rec) throw new Error('계정을 찾을 수 없습니다.');
+  if (!rec) throw new Error(t('ext.account_not_found'));
   const weak = passwordProblem(newPassword);
   if (weak) throw new Error(weak);
 
@@ -110,7 +111,7 @@ export async function preparePasswordChange(id, currentPassword, newPassword) {
     const v = await decryptJSON(oldKey, rec.verifier);
     if (v !== VERIFIER_TEXT) throw new Error('mismatch');
   } catch {
-    throw new Error('현재 비밀번호가 올바르지 않습니다.');
+    throw new Error(t('ext.cur_pw_wrong'));
   }
 
   const newSalt = randomBytes(16);
@@ -124,7 +125,7 @@ export async function commitPasswordChange(id, newKey, newSalt, iterations) {
   const nid = normalizeId(id);
   const users = loadUsers();
   const rec = users[nid];
-  if (!rec) throw new Error('계정을 찾을 수 없습니다.');
+  if (!rec) throw new Error(t('ext.account_not_found'));
   rec.salt = newSalt;
   rec.iterations = iterations;
   rec.verifier = await encryptJSON(newKey, VERIFIER_TEXT);
@@ -162,14 +163,14 @@ async function cacheOnlineVerifier(id, displayName, encKey, kdfSalt, iterations)
 export async function onlineSignup(username, password, options = {}) {
   const display = String(username || '').trim();
   const id = normalizeId(username);
-  if (!id) throw new Error('아이디를 입력하세요.');
-  if (id.length < 2) throw new Error('아이디는 2자 이상이어야 합니다.');
+  if (!id) throw new Error(t('ext.id_required'));
+  if (id.length < 2) throw new Error(t('ext.id_min'));
   const weak = passwordProblem(password);
   if (weak) throw new Error(weak);
 
   // Reject duplicates up-front (server also enforces this).
   const params = await authParams(id);
-  if (params && params.exists) throw new Error('이미 존재하는 아이디입니다.');
+  if (params && params.exists) throw new Error(t('ext.id_exists'));
 
   const salt = randomBytes(16);
   const iterations = PBKDF2_ITERATIONS;
@@ -187,7 +188,7 @@ export async function onlineSignup(username, password, options = {}) {
 // cached verifier — the app stays usable and syncs when connectivity returns.
 export async function onlineLogin(username, password, options = {}) {
   const id = normalizeId(username);
-  if (!id) throw new Error('아이디를 입력하세요.');
+  if (!id) throw new Error(t('ext.id_required'));
 
   let params;
   try {
@@ -198,7 +199,7 @@ export async function onlineLogin(username, password, options = {}) {
     return offlineLogin(id, password, cache, options);
   }
 
-  if (!params || !params.exists) throw new Error('존재하지 않는 아이디입니다.');
+  if (!params || !params.exists) throw new Error(t('ext.id_not_found'));
 
   const salt = fromB64(params.kdf_salt);
   const iterations = params.kdf_iterations || PBKDF2_ITERATIONS;
@@ -208,7 +209,7 @@ export async function onlineLogin(username, password, options = {}) {
   try {
     ({ token } = await serverLogin({ username: id, authToken }));
   } catch (err) {
-    if (err.status === 401 || err.status === 403) throw new Error('비밀번호가 올바르지 않습니다.');
+    if (err.status === 401 || err.status === 403) throw new Error(t('ext.pw_wrong'));
     throw err;
   }
 
@@ -226,7 +227,7 @@ async function offlineLogin(id, password, cache, options = {}) {
     const v = await decryptJSON(encKey, cache.verifier);
     if (v !== VERIFIER_TEXT) throw new Error('mismatch');
   } catch {
-    throw new Error('비밀번호가 올바르지 않습니다.');
+    throw new Error(t('ext.pw_wrong'));
   }
   return {
     id, displayName: cache.displayName || id, key: encKey, mode: 'online',
@@ -248,7 +249,7 @@ export async function onlineChangePassword({ currentPassword, newPassword, kdfSa
   const { authToken: curAuth } = await deriveSyncKeys(
     currentPassword, fromB64(kdfSalt), iterations || PBKDF2_ITERATIONS
   );
-  if (curAuth !== currentAuthToken) throw new Error('현재 비밀번호가 올바르지 않습니다.');
+  if (curAuth !== currentAuthToken) throw new Error(t('ext.cur_pw_wrong'));
 
   const newSalt = randomBytes(16);
   const newIterations = PBKDF2_ITERATIONS;

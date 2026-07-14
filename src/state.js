@@ -1,12 +1,13 @@
 // Settings shape & helpers. Persistence is handled by main.js, which encrypts
 // each user's settings with their password-derived key (see crypto.js).
+import { t } from './i18n.js';
 
 export const MODEL_META = {
   openai: { label: 'ChatGPT', color: 'var(--openai)', apiConsoleUrl: 'https://platform.openai.com/api-keys' },
   anthropic: { label: 'Claude', color: 'var(--claude)', apiConsoleUrl: 'https://console.anthropic.com/settings/keys' },
   gemini: { label: 'Gemini', color: 'var(--gemini)', apiConsoleUrl: 'https://aistudio.google.com/app/apikey' },
   grok: { label: 'Grok', color: 'var(--grok)', apiConsoleUrl: 'https://console.x.ai/' },
-  local: { label: '로컬', color: 'var(--local)' },
+  local: { label: t('ext.local_label'), color: 'var(--local)' },
 };
 
 export const MAX_LOCAL = 3;
@@ -60,6 +61,7 @@ export function defaultSettings() {
     webSearchEnabled: true,  // composer-level web search toggle (on by default)
     showCost: true,          // show token/cost estimates
     autoLockMinutes: 60,     // idle auto-logout (0 = off)
+    collapsedFolders: [],    // sidebar folder names that are collapsed (UI state, encrypted with the rest of settings)
     prompts: [],             // saved prompt library: [{ id, title, text }]
     models: [
       { id: 'openai', type: 'openai', label: 'ChatGPT', apiKey: '', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.6-luna', enabled: true, vision: true, priceIn: 1, priceOut: 6 },
@@ -82,7 +84,8 @@ export function normalizeSettings(parsed) {
         : (m.type === 'openai' || m.type === 'anthropic' || m.type === 'gemini' || m.type === 'grok'),
     }));
   const prompts = Array.isArray(parsed.prompts) ? parsed.prompts : [];
-  return { ...base, ...parsed, models, prompts };
+  const collapsedFolders = Array.isArray(parsed.collapsedFolders) ? parsed.collapsedFolders.filter((x) => typeof x === 'string') : [];
+  return { ...base, ...parsed, models, prompts, collapsedFolders };
 }
 
 export function localCount(settings) {
@@ -93,7 +96,7 @@ export function makeLocalModel(index) {
   return {
     id: 'local-' + Date.now() + '-' + index,
     type: 'local',
-    label: '로컬 모델 ' + index,
+    label: t('ext.local_model', { n: index }),
     apiKey: '',
     baseUrl: 'http://localhost:11434/v1',
     model: 'llama3.1',

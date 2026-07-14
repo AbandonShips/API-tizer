@@ -1,6 +1,6 @@
 # ![API-tizer 로고](./favicon.png) API-Tizer
 
-**현재 버전: v1.3.2**
+**현재 버전: v1.4.0**
 
 ChatGPT · Claude · Gemini · Grok · 로컬 OpenAI 호환 모델을 한 화면에서 동시에 호출하고 비교하는 개인용 멀티 AI 콘솔입니다.
 
@@ -21,11 +21,42 @@ ChatGPT · Claude · Gemini · Grok · 로컬 OpenAI 호환 모델을 한 화면
 - 모델별 토큰/비용 추정치 누적 (에러·타임아웃·부분 응답 시에도 정확히 카운트) 및 접이식 비용 패널
 - 주요 제공자 모델 프리셋과 단가 자동 입력
 - 로컬 암호화 저장 또는 Cloudflare Worker 기반 온라인 동기화
+- **한국어 / English UI** — 로그인 화면 또는 설정에서 전환 (AI에게 보내는 지시문 언어도 함께 전환)
 - PC/모바일 레이아웃 자동 전환 및 수동 고정
 
 ---
 
+## English
+
+**API-Tizer** is a personal multi‑AI console that calls and compares ChatGPT · Claude · Gemini · Grok and local OpenAI‑compatible models on a single screen.
+
+- Simultaneous responses from multiple models, split/unified views, and a master summary
+- On turns where the master summary succeeded, follow‑up questions carry both the **official synthesis + each model's own previous answer** to preserve continuity and diversity
+- A **match/dissent badge** next to the master summary (✓ Match · ⚠ Dissent) shows at a glance when the models diverge (a possible hallucination signal)
+- **Ensemble value even with master OFF** — a per‑turn agree/diverge signal from answer similarity (no extra cost), plus on‑demand 🔍 Cross‑check where one model points out only "where the answers differ"
+- **Aggregator fallback** — if the master model times out or fails, another finished model can write the summary instead
+- **Automatic compaction** for long chats — when the prior context sent with every question grows large, it offers to fold earlier turns into a single summary to save tokens (the on‑screen chat stays intact); a 🗜 Compact‑chat button allows manual runs anytime
+- Token‑saving history — recent turns verbatim, older turns as the official synthesis only, and attachments (images/PDFs) re‑sent only for the most recent turns
+- Image · text · PDF attachments
+- Sources for web‑search‑capable models, automatic in‑text URL linkification, and image‑link previews
+- "Rich formatting" (on by default) yields emoji/tables/structured answers even on API calls (closer to the web ChatGPT feel)
+- Per‑chat 📝 dedicated prompt — a system prompt applied only to a specific chat (replaces the global taste prompt; the platform continuity instruction is kept), with independent rich‑formatting on/off per chat
+- Model‑response & master‑summary timeout (default 60s, adjustable) + summarize immediately using only the finished models
+- Max response tokens (default 8192) — adjustable so long summaries/answers aren't truncated on models like Claude that require a cap
+- Per‑model token/cost estimates accumulated (counted accurately even on errors/timeouts/partials) with a collapsible cost panel
+- Presets and pricing for major providers auto‑filled
+- Local encrypted storage or Cloudflare Worker‑based online sync
+- **한국어 / English UI** — switch on the login screen or in Settings (this also switches the language of the instructions sent to the AI)
+- Automatic PC/mobile layout switching with manual override
+
+---
+
 ## 변경 사항
+
+### v1.4.0
+
+- **한국어 / English 다국어 지원**을 추가했습니다. 로그인 화면 하단과 설정의 “언어(Language)”에서 전환할 수 있고, 선택은 이 기기에 저장됩니다(로그인 전에도 동작). 앱 화면 전체는 물론 **AI에게 보내는 지시문 언어까지 함께 바뀌어**, English를 고르면 답변도 영어로 나오고 마스터 요약의 소수 의견 섹션도 영어(`### Minority opinion`)로 표기됩니다. 일치/이견 배지 판단은 두 언어를 모두 인식하므로 과거 대화도 올바르게 표시됩니다. 처음 방문 시 브라우저 언어를 감지해 기본값을 정합니다.
+- **채팅 폴더 정리 기능을 대폭 개선**했습니다. 이제 사이드바에서 채팅 제목을 **드래그해 폴더로 이동**할 수 있고(PC), 폴더 헤더를 눌러 **접기/펼치기**(채팅 개수 표시)가 되며, 📁 버튼을 누르면 **기존 폴더 목록에서 선택**하거나 새 폴더를 만드는 메뉴가 뜽니다. 드래그는 가운데 제목에서만 시작돼 핀·이름변경·삭제 버튼 클릭과 겹치지 않습니다. 폴더 접힘 상태는 암호화되어 저장·동기화됩니다.
 
 ### v1.3.2
 

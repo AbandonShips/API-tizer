@@ -23,50 +23,11 @@ import {
 import { runSync, isConfigured as syncConfigured, getEndpoint, setEndpoint, serverLogin, serverChangePassword } from './sync.js';
 import { streamChat, supportsWebSearch } from './providers.js';
 import { renderMarkdown } from './markdown.js';
+import { t, getLang, setLang, applyI18n, onLangChange } from './i18n.js';
 
-// Rich formatting instruction (이모지, 표, 구조화 등) injected as system prompt
-// when the rich style is enabled (global or per-chat).
-// When per-chat rich checkbox is on, this is included so both individual answers
-// and the master summary use rich formatting. When off, it is omitted.
-const RICH_STYLE_INSTRUCTION =
-  '모든 답변은 가독성이 높고 시각적으로 풍부한 마크다운 형식으로 작성하세요.\n' +
-  '- ## 제목, ### 소제목을 사용해 명확히 구조화하세요.\n' +
-  '- 번호 목록과 불릿 목록을 적극 활용하세요.\n' +
-  '- 데이터, 비교, 목록, 단계 설명 등은 반드시 마크다운 표(| 컬럼 |)로 표현하세요. 구분선(|---|)을 반드시 포함하세요.\n' +
-  '- 상황에 맞게 자연스럽게 이모지(✅ 📌 💡 ⚠️ 등)를 사용하세요. 이모지는 주로 제목이나 중요한 포인트 앞에 배치하는 것이 좋습니다.\n' +
-  '- 핵심 내용은 **굵게**, 코드나 용어는 `인라인 코드`로 강조하세요.\n' +
-  '- 전체적으로 친절하고 읽기 쉬우며 시각적으로 잘 정리된 스타일을 유지하세요.';
-
-// Platform core (L0) — always injected first. Not user-editable. Explains multi-model
-// continuity: official master synthesis vs this model's own prior answer.
-const CONTINUITY_INSTRUCTION =
-  '당신은 API-tizer의 여러 AI 중 하나입니다. 같은 질문에 여러 모델이 답하고, 필요할 때 마스터가 공식 종합을 만듭니다.\n' +
-  '이전 대화에 아래 두 블록이 함께 있을 수 있습니다.\n' +
-  '1) [이전 공식 종합] — 사용자가 읽고 이어가는 공통 기준. 후속 질문의 기본 전제로 우선하세요.\n' +
-  '2) [내가 그 턴에 제출한 개별 답] — 당신이 그때 쓴 원문. 관점·세부·이견·톤을 파악하는 참고용입니다.\n' +
-  '사용자가 공식 결론을 따르는 취지(예: 특정 옵션 선택)면 공식 종합을 우선하고, ' +
-  '이견·심화를 묻거나 유의미한 보완이 있으면 개별 답의 개성을 살려도 됩니다. ' +
-  '공식만 복창하거나 개별 소수 의견만 고집하지 마세요. 다른 모델의 원문은 주어지지 않습니다.';
-
-// Master editor instruction (L0 for runMaster).
-const MASTER_INSTRUCTION =
-  '당신은 여러 AI의 답변을 종합하는 편집자입니다. 목표는 매끄러운 하나의 답이 아니라, ' +
-  '여러 독립 모델의 교차 검증으로 신뢰도를 높이고 불확실성을 드러내는 것입니다. 아래 규칙을 지키세요.\n' +
-  '1) 여러 모델이 공통으로 말한 내용을 가장 신뢰도 높은 핵심으로 삼아 명확하고 충분히 자세한 최종 답변을 쓰세요. ' +
-  '중요 수치·코드·고유명사·선택지 정의는 생략하지 마세요.\n' +
-  '2) 모델 간 사실이 상충하면 임의로 하나를 고르지 말고 어느 모델이 무엇을 다르게 말했는지 그대로 드러내세요(예: "A는 X, B는 Y"). ' +
-  '한 모델만 주장하고 다른 모델엔 없는 내용은 "한 모델 주장"으로 구분해 신뢰 수준을 낮춰 표시하세요.\n' +
-  '3) 어떤 모델도 말하지 않은 새로운 사실을 지어내지 마세요. 답변들에 근거가 있는 내용만 쓰세요.\n' +
-  '입력에 [이전 공식 종합 — 참고]가 있으면 용어·선택지·이전 결론의 연속을 맞추는 데 참고하되, 주 재료는 이번 질문과 이번 답변입니다. ' +
-  '이전 종합을 고정하지 말고 필요하면 수정·갱신하세요.\n' +
-  "마지막에 '### 소수 의견' 섹션을 추가해, 다른 모델들과 눈에 띄게 다른 주장을 한 모델이 있으면 어느 모델이 무엇을 다르게 말했는지 1~3줄로 적으세요. " +
-  "의미 있는 차이가 없으면 '특이한 소수 의견 없음'이라고 적으세요.";
-
-// Cross-check instruction (master-off, on-demand): identify agreements & conflicts, do NOT synthesise.
-const CROSS_CHECK_INSTRUCTION =
-  '당신은 여러 AI 답변의 교차 검증관입니다. 답을 새로 종합하거나 최종 결론을 내리지 마세요. ' +
-  '대신 아래 답변들을 비교해 (1) 여러 모델이 공통으로 일치하는 핵심과 (2) 서로 상충하거나 한 모델만 주장하는 지점(사실·수치·결론이 다른 부분)을 구분해 간결한 마크다운으로 정리하세요. ' +
-  '상충 지점은 "A는 X, B는 Y"처럼 누가 무엇을 다르게 말했는지 명시하고, 사용자가 어디를 더 확인해야 하는지 알 수 있게 하세요. 새로운 사실을 지어내지 마세요.';
+// AI system instructions (rich formatting, continuity L0, master editor, cross-check,
+// compaction) now live in src/i18n.js so they switch with the UI language.
+// Use t('instr.rich' | 'instr.continuity' | 'instr.master' | 'instr.crosscheck' | 'instr.compaction').
 
 // ---------- tiny DOM helper ----------
 function h(tag, props = {}, children = []) {
@@ -93,6 +54,7 @@ let chats = [];
 let currentChat = null;
 let turns = [];
 let activeController = null; // AbortController for in-flight send
+let dragChatId = null; // id of chat being dragged onto a folder (desktop drag & drop)
 const SETTINGS_PREFIX = 'apitizer.settings.';
 let authMode = 'login'; // 'login' | 'signup'
 // Online (synced) vs local-only login. Default to online so new devices sync
@@ -245,11 +207,11 @@ function initAppEvents() {
     try {
       await navigator.clipboard.writeText(code);
       const prev = btn.textContent;
-      btn.textContent = '복사됨 ✓';
+      btn.textContent = t('copy.copied');
       btn.classList.add('copied');
       setTimeout(() => { btn.textContent = prev; btn.classList.remove('copied'); }, 1200);
     } catch {
-      alert('복사에 실패했습니다. (localhost·HTTPS에서만 클립보드를 사용할 수 있습니다)');
+      alert(t('copy.fail_clip'));
     }
   });
 
@@ -308,8 +270,7 @@ function closeHelp() { $('#helpModal').hidden = true; }
 function isMobileLayout() { return document.body.classList.contains('is-mobile'); }
 
 function updatePromptPlaceholder() {
-  const key = isMobileLayout() ? 'placeholderMobile' : 'placeholderDesktop';
-  promptInput.placeholder = promptInput.dataset[key] || promptInput.placeholder;
+  promptInput.placeholder = t(isMobileLayout() ? 'comp.ph_mobile' : 'comp.ph_desktop');
   autoGrow();
 }
 
@@ -329,19 +290,19 @@ function renderPromptList() {
   list.innerHTML = '';
   const prompts = settings.prompts || [];
   if (!prompts.length) {
-    list.appendChild(h('p', { class: 'muted', text: '저장된 프롬프트가 없습니다. 위에서 추가해 보세요.' }));
+    list.appendChild(h('p', { class: 'muted', text: t('plib.empty') }));
     return;
   }
   for (const p of prompts) {
     list.appendChild(h('div', { class: 'prompt-item' }, [
       h('div', { class: 'prompt-item-main' }, [
-        h('div', { class: 'prompt-item-title', text: p.title || '(제목 없음)' }),
+        h('div', { class: 'prompt-item-title', text: p.title || t('plib.untitled') }),
         h('div', { class: 'prompt-item-text', text: p.text || '' }),
       ]),
       h('div', { class: 'prompt-item-acts' }, [
-        h('button', { class: 'btn btn-primary btn-sm', title: '입력창에 넣기',
-          onclick: () => insertPrompt(p.id) }, '삽입'),
-        h('button', { class: 'q-act', title: '삭제',
+        h('button', { class: 'btn btn-primary btn-sm', title: t('plib.insert_title'),
+          onclick: () => insertPrompt(p.id) }, t('plib.insert')),
+        h('button', { class: 'q-act', title: t('common.delete'),
           onclick: () => deletePrompt(p.id) }, '🗑'),
       ]),
     ]));
@@ -455,11 +416,11 @@ function applyLayoutMode() {
     // mode returns to auto so PC/mobile follows the device again.
     btn.textContent = mobile ? '\uD83D\uDDA5\uFE0F' : '\uD83D\uDCF1';
     if (layoutMode === 'auto') {
-      btn.setAttribute('aria-label', mobile ? 'PC 보기로 전환 (현재: 자동)' : '모바일 보기로 전환 (현재: 자동)');
-      btn.setAttribute('data-tip', mobile ? 'PC 레이아웃으로 전환 (현재: 자동)' : '모바일 레이아웃으로 전환 (현재: 자동)');
+      btn.setAttribute('aria-label', mobile ? t('top.layout_to_pc_auto') : t('top.layout_to_mobile_auto'));
+      btn.setAttribute('data-tip', mobile ? t('top.layout_to_pc_tip') : t('top.layout_to_mobile_tip'));
     } else {
-      btn.setAttribute('aria-label', '자동 레이아웃으로 복귀');
-      btn.setAttribute('data-tip', '자동 레이아웃으로 복귀');
+      btn.setAttribute('aria-label', t('top.layout_back_auto'));
+      btn.setAttribute('data-tip', t('top.layout_back_auto'));
     }
   }
 }
@@ -489,7 +450,7 @@ function applyTheme() {
   const btn = $('#themeBtn');
   if (btn) {
     btn.textContent = theme === 'light' ? '\u2600\uFE0F' : '\uD83C\uDF19'; // ☀️ when light shown, 🌙 when dark
-    btn.setAttribute('data-tip', theme === 'light' ? '\uB2E4\uD06C \uD14C\uB9C8\uB85C \uC804\uD658' : '\uB77C\uC774\uD2B8 \uD14C\uB9C8\uB85C \uC804\uD658');
+    btn.setAttribute('data-tip', theme === 'light' ? t('top.theme_to_dark') : t('top.theme_to_light'));
   }
 }
 function setupThemeToggle() {
@@ -549,7 +510,8 @@ function initAuth() {
   // Opening the app via a plain-HTTP LAN address would silently break login,
   // so fail loudly with guidance instead.
   if (!window.crypto || !window.crypto.subtle) {
-    showAuthError('이 주소에서는 암호화를 사용할 수 없습니다. http://localhost:8753 로 접속하세요.');
+    applyI18n();
+    showAuthError(t('err.no_crypto'));
     $('#authSubmit').disabled = true;
     $('#authUser').disabled = true;
     $('#authPass').disabled = true;
@@ -557,6 +519,8 @@ function initAuth() {
     return;
   }
   // Always open on the LOGIN view (the first-ever user taps 회원가입).
+  applyI18n();
+  setupLangControls();
   authMode = 'login';
   applyAuthMode();
   $('#authToggle').addEventListener('click', (e) => {
@@ -601,9 +565,9 @@ function initAuth() {
 function applyAuthMode() {
   const signupMode = authMode === 'signup';
   $('#authPass2').hidden = !signupMode;
-  $('#authSubmit').textContent = signupMode ? '회원가입' : '로그인';
-  $('#authSwitchText').textContent = signupMode ? '이미 계정이 있으신가요?' : '계정이 없으신가요?';
-  $('#authToggle').textContent = signupMode ? '로그인' : '회원가입';
+  $('#authSubmit').textContent = signupMode ? t('auth.signup') : t('auth.login');
+  $('#authSwitchText').textContent = signupMode ? t('auth.switch_to_login') : t('auth.switch_to_signup');
+  $('#authToggle').textContent = signupMode ? t('auth.login') : t('auth.signup');
   $('#authPass').setAttribute('autocomplete', signupMode ? 'new-password' : 'current-password');
   showAuthError('');
 }
@@ -619,9 +583,7 @@ function applyLoginMode() {
   if (cfg) cfg.hidden = !online;
   const sub = $('#authSub');
   if (sub) {
-    sub.textContent = online
-      ? '여러 기기에서 안전하게 동기화됩니다.'
-      : '이 브라우저에만 암호화되어 저장됩니다.';
+    sub.textContent = online ? t('auth.sub_online_short') : t('auth.sub_local');
   }
 }
 
@@ -631,41 +593,85 @@ function showAuthError(msg) {
   el.hidden = !msg;
 }
 
+// ---- Language (한국어 / English) ----
+function setupLangControls() {
+  for (const sel of ['#authLangSelect', '#settingsLangSelect']) {
+    const box = $(sel);
+    if (!box || box.dataset.wired) continue;
+    box.dataset.wired = '1';
+    box.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-lang]');
+      if (btn) setLang(btn.dataset.lang);
+    });
+  }
+  updateLangButtons();
+}
+function updateLangButtons() {
+  const cur = getLang();
+  document.querySelectorAll('#authLangSelect [data-lang], #settingsLangSelect [data-lang]')
+    .forEach((b) => b.classList.toggle('active', b.dataset.lang === cur));
+}
+// Re-localise everything when the language changes at runtime.
+function refreshLanguage() {
+  applyI18n();
+  updateLangButtons();
+  applyAuthMode();
+  applyLoginMode();
+  applyTheme();
+  applyLayoutMode(); // also refreshes the prompt placeholder + usage panel
+  if (session) {
+    updateCompactBtn();
+    renderChatTitle();
+    renderChatList();
+    renderMessages({ keepScroll: true }); // preserve scroll position across a language switch
+    const hint = document.querySelector('.sidebar-foot .hint');
+    if (hint) hint.textContent = t(session.mode === 'online' ? 'side.foot_online' : 'side.foot_local');
+    if (settingsModal && !settingsModal.hidden) {
+      readModelForm();     // keep unsaved model-field edits before the rows are rebuilt
+      renderModelSettings();
+      // applyI18n rebuilt the reset-scope <p> (data-i18n-html), which reset this
+      // <strong> back to the generic label — restore the actual user.
+      $('#resetUserLabel').textContent = session ? `'${session.displayName}'` : t('reset.current_user');
+    }
+  }
+}
+onLangChange(refreshLanguage);
+
 async function submitAuth() {
   const username = $('#authUser').value.trim();
   const password = $('#authPass').value;
   const submitBtn = $('#authSubmit');
   const autoLoginRequested = $('#autoLogin').checked;
   showAuthError('');
-  if (!username || !password) { showAuthError('아이디와 비밀번호를 입력하세요.'); return; }
+  if (!username || !password) { showAuthError(t('err.enter_id_pw')); return; }
 
   if (authMode === 'login') {
     const waitMs = loginWaitMs(username);
     if (waitMs > 0) {
-      showAuthError(`로그인 시도가 너무 많습니다. ${formatWait(waitMs)} 후 다시 시도하세요.`);
+      showAuthError(t('err.too_many', { wait: formatWait(waitMs) }));
       return;
     }
   }
 
   submitBtn.disabled = true;
   const prevText = submitBtn.textContent;
-  submitBtn.textContent = '처리 중…';
+  submitBtn.textContent = t('auth.processing');
   try {
     let s;
     if (loginMode === 'online') {
       if (!syncConfigured()) {
-        throw new Error('동기화 서버 주소가 설정되지 않았습니다. 로컬 모드로 전환하거나 서버 주소를 등록하세요.');
+        throw new Error(t('err.no_sync_server'));
       }
       if (authMode === 'signup') {
         const pass2 = $('#authPass2').value;
-        if (password !== pass2) throw new Error('비밀번호가 일치하지 않습니다.');
+        if (password !== pass2) throw new Error(t('err.pw_mismatch'));
         s = await onlineSignup(username, password, { extractable: autoLoginRequested });
       } else {
         s = await onlineLogin(username, password, { extractable: autoLoginRequested });
       }
     } else if (authMode === 'signup') {
       const pass2 = $('#authPass2').value;
-      if (password !== pass2) throw new Error('비밀번호가 일치하지 않습니다.');
+      if (password !== pass2) throw new Error(t('err.pw_mismatch'));
       s = await signup(username, password, { extractable: autoLoginRequested });
       s.mode = 'local';
     } else {
@@ -736,7 +742,7 @@ async function tryAutoLogin() {
   const submitBtn = $('#authSubmit');
   const prevText = submitBtn.textContent;
   submitBtn.disabled = true;
-  submitBtn.textContent = '자동 로그인 중…';
+  submitBtn.textContent = t('auth.autologin_ing');
   try {
     const saved = await decryptJSON(await autoLoginCryptoKey(), JSON.parse(raw));
     const s = {
@@ -760,7 +766,7 @@ async function tryAutoLogin() {
       } catch (err) {
         if (err && (err.status === 401 || err.status === 403)) {
           clearAutoLoginSession();
-          showAuthError('자동 로그인 정보가 만료되었습니다. 다시 로그인하세요.');
+          showAuthError(t('err.autologin_expired'));
           return false;
         }
         s.offline = true;
@@ -777,7 +783,7 @@ async function tryAutoLogin() {
     return true;
   } catch {
     clearAutoLoginSession();
-    showAuthError('자동 로그인 정보를 읽지 못했습니다. 다시 로그인하세요.');
+    showAuthError(t('err.autologin_read'));
     return false;
   } finally {
     submitBtn.disabled = false;
@@ -826,7 +832,7 @@ function clearLoginFailures(username) {
 }
 function formatWait(ms) {
   const minutes = Math.ceil(ms / 60000);
-  return minutes >= 60 ? `${Math.ceil(minutes / 60)}시간` : `${minutes}분`;
+  return minutes >= 60 ? t('time.hours', { h: Math.ceil(minutes / 60) }) : t('time.minutes', { m: minutes });
 }
 
 async function onAuthed(s) {
@@ -862,9 +868,7 @@ async function onAuthed(s) {
   $('#syncRow').hidden = (s.mode !== 'online');
   const hint = document.querySelector('.sidebar-foot .hint');
   if (hint) {
-    hint.textContent = s.mode === 'online'
-      ? '키·기록은 암호화되어 저장되고 서버에는 암호문만 동기화됩니다.'
-      : '키·기록은 이 브라우저에만 암호화 저장됩니다.';
+    hint.textContent = t(s.mode === 'online' ? 'side.foot_online' : 'side.foot_local');
   }
 
   await bootAppData();
@@ -905,7 +909,7 @@ async function runSyncSafe() {
     // (pending) edits are intentionally discarded per the sync design.
     if (e && e.status === 401) {
       clearAutoLoginSession();
-      forceLogout('비밀번호가 변경되어 자동 로그아웃되었습니다. 새 비밀번호로 다시 로그인해주세요.');
+      forceLogout(t('err.pw_changed_logout'));
       return;
     }
     setSyncStatus('error', e && e.message);
@@ -954,10 +958,10 @@ function setSyncStatus(state, detail) {
   const el = $('#syncStatus');
   if (!el) return;
   const map = {
-    syncing: '↻ 동기화 중…',
-    synced: '✓ 동기화됨',
-    offline: '⚠ 오프라인 (로컬 사용 중)',
-    error: '⚠ 동기화 실패',
+    syncing: t('sync.syncing'),
+    synced: t('sync.synced'),
+    offline: t('sync.offline'),
+    error: t('sync.error'),
   };
   el.textContent = map[state] || '';
   el.title = detail ? String(detail) : '';
@@ -994,7 +998,7 @@ function resetIdleTimer() {
   const mins = Number(settings.autoLockMinutes) || 0;
   if (mins <= 0) return;
   idleTimer = setTimeout(() => {
-    forceLogout('일정 시간 활동이 없어 자동 잠금되었습니다. 다시 로그인해주세요.');
+    forceLogout(t('err.idle_lock'));
   }, mins * 60 * 1000);
 }
 function startIdleWatch() {
@@ -1039,7 +1043,7 @@ function showAuthScreen() {
 }
 
 function logout() {
-  if (!confirm('로그아웃할까요? 다시 로그인하려면 비밀번호가 필요합니다.')) return;
+  if (!confirm(t('confirm.logout'))) return;
   clearAutoLoginSession();
   clearSessionState();
   showAuthScreen();
@@ -1154,7 +1158,7 @@ async function extractPdfText(file) {
     const content = await page.getTextContent();
     text += content.items.map((it) => it.str).join(' ') + '\n\n';
   }
-  if (doc.numPages > maxPages) text += `\n…(${doc.numPages}쪽 중 ${maxPages}쪽까지만 읽음)`;
+  if (doc.numPages > maxPages) text += t('pdf.trunc', { shown: maxPages, total: doc.numPages });
   return text.trim();
 }
 
@@ -1162,14 +1166,14 @@ async function addFiles(fileList) {
   const files = [...(fileList || [])];
   for (const file of files) {
     if (file.size > MAX_FILE_BYTES) {
-      alert(`"${file.name}" 은(는) 너무 큽니다 (최대 ${fmtSize(MAX_FILE_BYTES)}).`);
+      alert(t('file.too_big', { name: file.name, size: fmtSize(MAX_FILE_BYTES) }));
       continue;
     }
     const isImage = file.type.startsWith('image/');
     const isPdf = !isImage && (file.type === 'application/pdf' || /\.pdf$/i.test(file.name));
     const isText = !isImage && !isPdf && (TEXT_EXT.test(file.name) || file.type.startsWith('text/'));
     if (!isImage && !isPdf && !isText) {
-      alert(`"${file.name}" 형식은 지원하지 않습니다. 이미지 · PDF · 텍스트/코드 파일만 첨부할 수 있어요.`);
+      alert(t('file.type_unsupported', { name: file.name }));
       continue;
     }
     try {
@@ -1184,17 +1188,17 @@ async function addFiles(fileList) {
         try {
           a.text = await extractPdfText(file);
           a.extracting = false;
-          if (!a.text) a.text = '(PDF에서 추출된 텍스트가 없습니다 — 스캔 이미지 PDF일 수 있습니다.)';
+          if (!a.text) a.text = t('pdf.no_text');
         } catch (err) {
           pendingAttachments = pendingAttachments.filter((x) => x.id !== a.id);
-          alert(`"${file.name}" PDF를 읽지 못했습니다. (인터넷 연결이 필요하거나 손상된 파일일 수 있어요)`);
+          alert(t('file.pdf_read_fail', { name: file.name }));
         }
       } else {
         const text = await readAsText(file);
         pendingAttachments.push({ id: uid(), name: file.name, mime: file.type || 'text/plain', size: file.size, kind: 'text', text });
       }
     } catch {
-      alert(`"${file.name}" 을(를) 읽지 못했습니다.`);
+      alert(t('file.read_fail', { name: file.name }));
     }
   }
   renderAttachPreview();
@@ -1223,9 +1227,9 @@ function renderAttachPreview() {
       icon,
       h('div', { class: 'meta' }, [
         h('div', { class: 'fname', title: a.name, text: a.name }),
-        h('div', { class: 'fsize', text: a.extracting ? 'PDF 읽는 중…' : fmtSize(a.size) }),
+        h('div', { class: 'fsize', text: a.extracting ? t('attach.pdf_reading') : fmtSize(a.size) }),
       ]),
-      h('button', { class: 'rm', title: '제거', onclick: () => removeAttachment(a.id) }, '✕'),
+      h('button', { class: 'rm', title: t('attach.remove'), onclick: () => removeAttachment(a.id) }, '✕'),
     ]);
     attachPreviewEl.appendChild(thumb);
   }
@@ -1236,7 +1240,7 @@ function renderAttachPreview() {
     const noVision = enabledModels(settings).filter((m) => !m.vision);
     if (noVision.length) {
       attachPreviewEl.appendChild(h('div', { class: 'attach-warn' },
-        `⚠ ${noVision.map((m) => m.label).join(', ')} 은(는) 비전 미지원으로 설정되어 이미지를 받지 않습니다. (설정에서 비전 체크)`));
+        t('attach.no_vision', { models: noVision.map((m) => m.label).join(', ') })));
     }
   }
 }
@@ -1250,14 +1254,14 @@ function userPayload(turn, opts = {}) {
   const images = [];
   for (const a of turn.attachments || []) {
     if (a.kind === 'image' && a.dataUrl) {
-      if (stub) content += `${content ? '\n\n' : ''}[이전 첨부 이미지: ${a.name} — 앞서 참고함]`;
+      if (stub) content += `${content ? '\n\n' : ''}${t('payload.attach_img_stub', { name: a.name })}`;
       else images.push(a.dataUrl);
     } else if (a.kind === 'text' && a.text != null) {
-      if (stub) content += `${content ? '\n\n' : ''}[이전 첨부 파일: ${a.name} — 앞서 참고함]`;
-      else content += `${content ? '\n\n' : ''}[첨부 파일: ${a.name}]\n\`\`\`\n${a.text}\n\`\`\``;
+      if (stub) content += `${content ? '\n\n' : ''}${t('payload.attach_file_stub', { name: a.name })}`;
+      else content += `${content ? '\n\n' : ''}${t('payload.attach_file', { name: a.name, text: a.text })}`;
     }
   }
-  return { content: content || '(첨부 파일을 참고해 답해주세요)', images };
+  return { content: content || t('payload.fallback'), images };
 }
 
 function setViewButtons() {
@@ -1279,11 +1283,11 @@ function renderChatList() {
       (searchMatchIds && searchMatchIds.has(c.id)));
   }
   if (!chats.length) {
-    chatListEl.appendChild(h('p', { class: 'hint', text: '채팅이 없습니다. 새 채팅을 시작하세요.' }));
+    chatListEl.appendChild(h('p', { class: 'hint', text: t('side.empty') }));
     return;
   }
   if (!list.length) {
-    chatListEl.appendChild(h('p', { class: 'chat-search-empty', text: `"${chatSearchTerm}" 검색 결과가 없습니다.` }));
+    chatListEl.appendChild(h('p', { class: 'chat-search-empty', text: t('side.search_empty', { term: chatSearchTerm }) }));
     return;
   }
 
@@ -1291,7 +1295,7 @@ function renderChatList() {
   const pinned = list.filter((c) => c.pinned);
   const rest = list.filter((c) => !c.pinned);
   if (pinned.length) {
-    chatListEl.appendChild(h('div', { class: 'chat-group-label' }, '📌 고정됨'));
+    chatListEl.appendChild(h('div', { class: 'chat-group-label' }, t('side.pinned')));
     pinned.forEach((c) => chatListEl.appendChild(chatItem(c)));
   }
   // folders among the rest
@@ -1303,32 +1307,69 @@ function renderChatList() {
       folders.get(c.folder).push(c);
     } else noFolder.push(c);
   }
+  const searching = !!chatSearchTerm; // while searching, force folders open so matches stay visible
   for (const [name, items] of [...folders.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-    chatListEl.appendChild(h('div', { class: 'chat-group-label' }, `📁 ${name}`));
-    items.forEach((c) => chatListEl.appendChild(chatItem(c)));
+    const collapsed = !searching && isFolderCollapsed(name);
+    const wrap = h('div', { class: 'chat-folder' });
+    const head = h('div', {
+      class: 'chat-group-label folder-head' + (searching ? ' static' : '') + (collapsed ? ' collapsed' : ''),
+      title: searching ? '' : (collapsed ? t('folder.expand') : t('folder.collapse')),
+      onclick: searching ? undefined : (() => toggleFolderCollapse(name)),
+    }, [
+      searching ? null : h('span', { class: 'fold-caret', text: collapsed ? '▸' : '▾' }),
+      h('span', { class: 'fold-name', text: `📁 ${name}` }),
+      h('span', { class: 'fold-count', text: String(items.length) }),
+    ]);
+    wrap.appendChild(head);
+    if (!collapsed) items.forEach((c) => wrap.appendChild(chatItem(c)));
+    makeDropZone(wrap, name);
+    chatListEl.appendChild(wrap);
   }
   if (noFolder.length) {
-    if (folders.size || pinned.length) chatListEl.appendChild(h('div', { class: 'chat-group-label' }, '채팅'));
-    noFolder.forEach((c) => chatListEl.appendChild(chatItem(c)));
+    const wrap = h('div', { class: 'chat-folder no-folder' });
+    if (folders.size || pinned.length) {
+      wrap.appendChild(h('div', { class: 'chat-group-label folder-head static' }, [
+        h('span', { class: 'fold-name', text: t('folder.no_folder') }),
+      ]));
+    }
+    noFolder.forEach((c) => wrap.appendChild(chatItem(c)));
+    makeDropZone(wrap, ''); // dropping here removes the chat from its folder
+    chatListEl.appendChild(wrap);
   }
 }
 
 function chatItem(c) {
   const item = h('div', {
     class: 'chat-item' + (currentChat && c.id === currentChat.id ? ' active' : ''),
+    draggable: 'true',
     onclick: () => openChat(c.id),
     ondblclick: (e) => { e.stopPropagation(); beginRename(c, item); },
+    ondragstart: (e) => {
+      // Keep the pin and action buttons (📁 ✎ 🗑) clickable by never starting a
+      // drag from them. Note: when grabbing the title, e.target is usually a TEXT
+      // node (no .closest), so normalise to its element before testing.
+      const el = e.target instanceof Element ? e.target : e.target.parentElement;
+      if (el && el.closest('.pin, .acts')) { e.preventDefault(); return; }
+      dragChatId = c.id;
+      try { e.dataTransfer.setData('text/plain', c.id); e.dataTransfer.effectAllowed = 'move'; } catch { /* older browsers */ }
+      item.classList.add('dragging');
+    },
+    ondragend: () => {
+      dragChatId = null;
+      item.classList.remove('dragging');
+      document.querySelectorAll('.chat-folder.drop-target').forEach((el) => el.classList.remove('drop-target'));
+    },
   }, [
-    h('span', { class: 'pin' + (c.pinned ? ' on' : ''), title: c.pinned ? '고정 해제' : '고정',
+    h('span', { class: 'pin' + (c.pinned ? ' on' : ''), title: c.pinned ? t('chat.unpin') : t('chat.pin'),
       onclick: (e) => { e.stopPropagation(); togglePin(c); } }, c.pinned ? '📌' : '📍'),
     h('span', { class: 'title', title: c.title, text: c.title }),
-    (c.chatPrompt && c.chatPrompt.trim() || (c.chatRichStyle === true || c.chatRichStyle === false)) ? h('span', { class: 'chat-instr-badge', title: '이 채팅 전용 지침 있음' }, '📝') : null,
+    (c.chatPrompt && c.chatPrompt.trim() || (c.chatRichStyle === true || c.chatRichStyle === false)) ? h('span', { class: 'chat-instr-badge', title: t('chat.has_instr') }, '📝') : null,
     h('span', { class: 'acts' }, [
-      h('span', { class: 'fld', title: '폴더 지정',
-        onclick: (e) => { e.stopPropagation(); assignFolder(c, item); } }, '📁'),
-      h('span', { class: 'ren', title: '이름 변경',
+      h('span', { class: 'fld', title: t('chat.assign_folder'),
+        onclick: (e) => { e.stopPropagation(); openFolderMenu(c, e.currentTarget); } }, '📁'),
+      h('span', { class: 'ren', title: t('chat.rename'),
         onclick: (e) => { e.stopPropagation(); beginRename(c, item); } }, '✎'),
-      h('span', { class: 'del', title: '삭제',
+      h('span', { class: 'del', title: t('chat.delete'),
         onclick: async (e) => { e.stopPropagation(); await removeChat(c.id); } }, '🗑'),
     ]),
   ]);
@@ -1342,36 +1383,155 @@ async function togglePin(c) {
   renderChatList();
 }
 
-function assignFolder(c, item) {
-  item.innerHTML = '';
-  const input = h('input', {
-    class: 'rename-input', type: 'text',
-    value: c.folder || '', placeholder: '폴더 이름 (비우면 폴더 해제)',
+// ----- Folders: move, collapse, drag & drop, picker menu -----
+function isFolderCollapsed(name) {
+  return Array.isArray(settings.collapsedFolders) && settings.collapsedFolders.includes(name);
+}
+
+function toggleFolderCollapse(name) {
+  if (!Array.isArray(settings.collapsedFolders)) settings.collapsedFolders = [];
+  const i = settings.collapsedFolders.indexOf(name);
+  if (i >= 0) settings.collapsedFolders.splice(i, 1);
+  else settings.collapsedFolders.push(name);
+  persistSettings();
+  renderChatList();
+}
+
+// Drop a folder from the collapsed set without re-rendering (caller re-renders).
+function expandFolder(name) {
+  if (!Array.isArray(settings.collapsedFolders)) return;
+  const i = settings.collapsedFolders.indexOf(name);
+  if (i >= 0) { settings.collapsedFolders.splice(i, 1); persistSettings(); }
+}
+
+async function moveChatToFolder(chatId, folderName) {
+  const c = chats.find((x) => x.id === chatId);
+  if (!c) return;
+  const target = (folderName || '').trim().slice(0, 30);
+  if ((c.folder || '') === target) return;
+  c.folder = target;
+  await updateChatMeta(session.id, session.key, c);
+  scheduleSync();
+  if (target) expandFolder(target); // make sure the destination is open so the move is visible
+  renderChatList();
+}
+
+// Make a sidebar container accept dropped chats and assign them to `folderName`
+// ('' clears the folder). Only reacts to internal chat drags (dragChatId set).
+function makeDropZone(el, folderName) {
+  el.addEventListener('dragover', (e) => {
+    if (dragChatId == null) return; // ignore file/text drags from elsewhere
+    e.preventDefault();
+    try { e.dataTransfer.dropEffect = 'move'; } catch { /* noop */ }
+    el.classList.add('drop-target');
   });
-  const commit = async (save) => {
-    if (save) {
-      const v = input.value.trim().slice(0, 30);
-      if (v !== (c.folder || '')) {
-        c.folder = v;
-        await updateChatMeta(session.id, session.key, c);
-        scheduleSync();
-      }
+  el.addEventListener('dragleave', (e) => {
+    if (!el.contains(e.relatedTarget)) el.classList.remove('drop-target');
+  });
+  el.addEventListener('drop', (e) => {
+    if (dragChatId == null) return;
+    e.preventDefault();
+    el.classList.remove('drop-target');
+    const id = dragChatId;
+    dragChatId = null;
+    moveChatToFolder(id, folderName);
+  });
+}
+
+let folderMenuEl = null;
+function closeFolderMenu() {
+  if (folderMenuEl) { folderMenuEl.remove(); folderMenuEl = null; }
+  document.removeEventListener('mousedown', onFolderMenuOutside, true);
+  document.removeEventListener('keydown', onFolderMenuKey, true);
+}
+function onFolderMenuOutside(e) {
+  if (folderMenuEl && !folderMenuEl.contains(e.target)) closeFolderMenu();
+}
+function onFolderMenuKey(e) {
+  if (e.key === 'Escape') { e.preventDefault(); closeFolderMenu(); }
+}
+
+// Popup menu on the 📁 button: pick an existing folder, remove from folder,
+// or create a new one. Replaces the old raw text-only prompt.
+function openFolderMenu(c, anchor) {
+  closeFolderMenu();
+  const existing = [...new Set(chats.map((x) => (x.folder || '').trim()).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b));
+
+  const menu = h('div', { class: 'folder-menu' });
+  menu.addEventListener('click', (e) => e.stopPropagation());
+  menu.appendChild(h('div', { class: 'folder-menu-title', text: t('folder.move_to') }));
+
+  const listWrap = h('div', { class: 'folder-menu-list' });
+  if (existing.length) {
+    for (const name of existing) {
+      const isCurrent = (c.folder || '') === name;
+      listWrap.appendChild(h('button', {
+        class: 'folder-menu-item' + (isCurrent ? ' current' : ''), type: 'button',
+        onclick: () => { closeFolderMenu(); moveChatToFolder(c.id, name); },
+      }, [
+        h('span', { class: 'fm-ic', text: '📁' }),
+        h('span', { class: 'fm-label', title: name, text: name }),
+        isCurrent ? h('span', { class: 'fm-check', text: '✓' }) : null,
+      ]));
     }
-    renderChatList();
+  } else {
+    listWrap.appendChild(h('div', { class: 'folder-menu-empty', text: t('folder.none_yet') }));
+  }
+  menu.appendChild(listWrap);
+
+  if (c.folder) {
+    menu.appendChild(h('button', {
+      class: 'folder-menu-item danger', type: 'button',
+      onclick: () => { closeFolderMenu(); moveChatToFolder(c.id, ''); },
+    }, [
+      h('span', { class: 'fm-ic', text: '↩' }),
+      h('span', { class: 'fm-label', text: t('folder.remove_from') }),
+    ]));
+  }
+
+  // New-folder row: click swaps it for an inline text input.
+  const input = h('input', { class: 'folder-menu-input', type: 'text', maxlength: '30', placeholder: t('folder.new_ph') });
+  const inputRow = h('div', { class: 'folder-menu-inputrow' }, [input]);
+  const commitNew = () => {
+    const v = input.value.trim().slice(0, 30);
+    closeFolderMenu();
+    if (v) moveChatToFolder(c.id, v);
   };
   input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); commit(true); }
-    else if (e.key === 'Escape') { e.preventDefault(); commit(false); }
+    if (e.key === 'Enter') { e.preventDefault(); commitNew(); }
+    else if (e.key === 'Escape') { e.preventDefault(); closeFolderMenu(); }
   });
-  input.addEventListener('blur', () => commit(true));
-  input.addEventListener('click', (e) => e.stopPropagation());
-  item.appendChild(input);
-  input.focus();
-  input.select();
+  const newRow = h('button', {
+    class: 'folder-menu-item new', type: 'button',
+    onclick: () => { newRow.replaceWith(inputRow); input.focus(); },
+  }, [
+    h('span', { class: 'fm-ic', text: '＋' }),
+    h('span', { class: 'fm-label', text: t('folder.new') }),
+  ]);
+  menu.appendChild(newRow);
+
+  document.body.appendChild(menu);
+  // Position under the anchor, clamped inside the viewport.
+  const r = anchor.getBoundingClientRect();
+  const mw = menu.offsetWidth, mh = menu.offsetHeight;
+  let left = r.left;
+  let top = r.bottom + 4;
+  if (left + mw > window.innerWidth - 8) left = window.innerWidth - mw - 8;
+  if (top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 4);
+  menu.style.left = Math.max(8, left) + 'px';
+  menu.style.top = top + 'px';
+
+  folderMenuEl = menu;
+  setTimeout(() => {
+    document.addEventListener('mousedown', onFolderMenuOutside, true);
+    document.addEventListener('keydown', onFolderMenuKey, true);
+  }, 0);
 }
 
 function beginRename(c, item) {
   item.innerHTML = '';
+  item.draggable = false; // don't let the drag handler hijack text selection while editing
   const input = h('input', { class: 'rename-input', type: 'text', value: c.title });
   const commit = async (save) => {
     if (save) {
@@ -1457,7 +1617,7 @@ async function openChat(id) {
 }
 
 async function removeChat(id) {
-  if (!confirm('이 채팅을 삭제할까요?')) return;
+  if (!confirm(t('confirm.delete_chat'))) return;
   await deleteChat(id);
   scheduleSync();
   chats = chats.filter((c) => c.id !== id);
@@ -1479,7 +1639,7 @@ function renderChips() {
   for (const m of settings.models) {
     const chip = h('span', {
       class: 'chip ' + (m.enabled ? 'on' : 'off'),
-      title: '클릭하여 이 모델 켜기/끄기',
+      title: t('chip.toggle'),
       onclick: () => toggleModelChip(m),
     }, [
       h('span', { class: 'badge', style: `background:${MODEL_META[m.type]?.color || 'var(--muted)'}` }),
@@ -1496,7 +1656,7 @@ function toggleModelChip(model) {
   if (disablingMaster) {
     settings.masterEnabled = false;
     masterToggle.checked = false;
-    showInlineNotice('마스터 모델을 제외하면 마스터 기능이 꺼집니다.');
+    showInlineNotice(t('notice.master_excluded'));
   }
   persistSettings();
   renderChips();
@@ -1508,7 +1668,7 @@ function showInlineNotice(message) {
   const layer = h('div', { class: 'inline-notice-layer' });
   const notice = h('div', { class: 'inline-notice', role: 'alert' }, [
     h('span', { class: 'inline-notice-msg', text: message }),
-    h('button', { type: 'button', text: '확인', onclick: () => layer.remove() }),
+    h('button', { type: 'button', text: t('common.ok'), onclick: () => layer.remove() }),
   ]);
   layer.appendChild(notice);
   document.body.appendChild(layer);
@@ -1560,7 +1720,7 @@ function renderUsage() {
 }
 
 async function doResetUsage() {
-  if (!confirm('누적 사용량을 0으로 초기화할까요? (대화 기록은 유지됩니다)')) return;
+  if (!confirm(t('confirm.reset_usage'))) return;
   resetUsage(settings);
   await persistSettings();
   renderUsage();
@@ -1584,13 +1744,13 @@ function renderMessages(opts = {}) {
 
 function emptyState() {
   return h('div', { class: 'empty-state' }, [
-    h('h2', { text: '하나의 질문, 여러 지성의 답' }),
-    h('p', { text: '한 번 입력하면 모든 모델이 동시에 사고하고, 마스터가 그 모두를 하나로 엮습니다.' }),
+    h('h2', { text: t('empty.h2') }),
+    h('p', { text: t('empty.p') }),
     h('ul', {}, [
-      h('li', { text: '⬛ 분할 뷰 — 모델별 답변을 나란히 비교' }),
-      h('li', { text: '▤ 통합 뷰 + 마스터 요약 — 하나의 결론, 그리고 소수 의견' }),
-      h('li', { text: '+ 새 채팅 — 맥락을 비워 토큰을 아끼고 새 주제로 시작' }),
-      h('li', { text: '⚙️ 설정 — API 키 · 개인 맞춤 · 로컬 엔드포인트' }),
+      h('li', { text: t('empty.li1') }),
+      h('li', { text: t('empty.li2') }),
+      h('li', { text: t('empty.li3') }),
+      h('li', { text: t('empty.li4') }),
     ]),
   ]);
 }
@@ -1601,19 +1761,26 @@ function emptyState() {
 function masterVerdict(turn) {
   const r = turn && turn.master;
   if (!(r && r.status === 'done' && r.text)) return null;
-  const m = /###\s*소수\s*의견\s*\n?([\s\S]*)$/.exec(r.text);
+  const m = /###\s*(?:소수\s*의견|minority\s*opinion)\s*\n?([\s\S]*)$/i.exec(r.text);
   if (!m) return null;
   const body = m[1].replace(/[\s*_`>#-]+$/, '').trim();
   if (!body) return null;
-  // "No meaningful dissent": the instructed sentinel ('특이한 소수 의견 없음') and common
-  // paraphrases — a negation tied to 의견/이견/차이/반대/다른 점, or a bare "없음".
+  // "No meaningful dissent": the instructed sentinels ('특이한 소수 의견 없음' / 'No notable
+  // minority opinion') and common paraphrases in either language.
   const noDissent =
     /(소수\s*의견|이견|차이|다른\s*점|반대|이의|불일치)\s*(은|는|이|가|점)?\s*(거의|딜히|특별히|크게)?\s*(없|관찰되지\s*않|발견되지\s*않|나타나지\s*않|존재하지\s*않|보이지\s*않)/.test(body)
     || /특이\s*(한|사항)?\s*(점|것|의견)?\s*(은|는|이|가)?\s*없/.test(body)
-    || (body.length <= 12 && /^[\s·\-*]*없(음|습니다|다)?[.!]?$/.test(body));
+    || (body.length <= 12 && /^[\s·\-*]*없(음|습니다|다)?[.!]?$/.test(body))
+    || /\bno\b[\s\S]{0,40}\b(minority|dissent|disagree|difference|diverg|conflict)/i.test(body)
+    || (body.length <= 16 && /^[\s·\-*]*(none|n\/a)[.!]?$/i.test(body));
   if (noDissent) return { state: 'consensus' };
   return { state: 'dissent', text: body };
 }
+
+// Timeout / abort are detected by matching either language's marker, so control
+// flow keeps working after a language switch and for turns saved in the other lang.
+function isTimeoutError(msg) { return !!msg && (String(msg).includes('타임아웃') || /timeout/i.test(String(msg))); }
+function isAbortError(msg) { return msg === '중단됨' || msg === 'Stopped'; }
 
 // Configure the agreement pill on a turn's master card: ⚠ 이견 (warn) or ✓ 일치 (ok).
 function setDissentBadge(el, turn) {
@@ -1622,12 +1789,12 @@ function setDissentBadge(el, turn) {
   el.hidden = false;
   if (v.state === 'dissent') {
     el.className = 'dissent-badge is-dissent';
-    el.textContent = '⚠ 이견';
-    el.title = '마스터가 소수 의견·이견을 표시했습니다. 판단을 확정하기 전에 각 모델의 원문을 확인해 보세요.\n\n' + v.text.slice(0, 240);
+    el.textContent = t('master.dissent_badge');
+    el.title = t('master.dissent_title') + v.text.slice(0, 240);
   } else {
     el.className = 'dissent-badge is-consensus';
-    el.textContent = '✓ 일치';
-    el.title = '모델들의 답이 대체로 일치했습니다 (마스터가 특이한 소수 의견을 발견하지 못함).';
+    el.textContent = t('master.agree_badge');
+    el.title = t('master.agree_title');
   }
 }
 
@@ -1643,9 +1810,9 @@ function masterHeadLabel(turn, masterModel) {
   const byId = turn.master?.by;
   if (byId && byId !== masterModel.id) {
     const by = turn.models?.[byId] || settings.models.find((x) => x.id === byId);
-    if (by) return `마스터 요약 · ${by.label} (대체)`;
+    if (by) return t('card.master_head_alt', { by: by.label });
   }
-  return `마스터 요약 · ${masterModel.label}`;
+  return t('card.master_head', { label: masterModel.label });
 }
 
 function modelCard(turn, m, isMaster = false) {
@@ -1659,11 +1826,11 @@ function modelCard(turn, m, isMaster = false) {
   applyStats(stats, resp, statsModelFor(turn, key));
 
   const copyBtn = h('button', {
-    class: 'card-act', title: '이 답변 복사',
+    class: 'card-act', title: t('card.copy_answer'),
     onclick: (e) => copyResp(turn, key, e.currentTarget),
   }, '⧉');
   const regenBtn = h('button', {
-    class: 'card-act', title: isMaster ? '마스터 요약 재생성' : '이 모델만 재생성',
+    class: 'card-act', title: isMaster ? t('card.regen_master') : t('card.regen_model'),
     onclick: () => regenerate(turn, key),
   }, '↻');
 
@@ -1689,10 +1856,10 @@ function crossCheckCard(turn) {
   const byModel = cc?.by ? (turn.models?.[cc.by] || settings.models.find((x) => x.id === cc.by)) : null;
   const stats = h('span', { class: 'card-stats', id: `stats-${turn.id}-crosscheck` });
   applyStats(stats, cc, byModel);
-  const copyBtn = h('button', { class: 'card-act', title: '교차검증 복사', onclick: (e) => copyResp(turn, 'crosscheck', e.currentTarget) }, '⧉');
+  const copyBtn = h('button', { class: 'card-act', title: t('crosscheck.copy'), onclick: (e) => copyResp(turn, 'crosscheck', e.currentTarget) }, '⧉');
   return h('div', { class: 'model-card crosscheck-card' }, [
     h('div', { class: 'card-head' }, [
-      h('span', {}, '🔍 교차검증'),
+      h('span', {}, t('crosscheck.label')),
       byModel ? h('span', { class: 'model-name', text: byModel.label }) : null,
       h('span', { class: 'card-acts' }, [stats, copyBtn]),
     ]),
@@ -1724,16 +1891,16 @@ function applyStats(el, resp, model) {
   const pt = resp.promptTokens || 0;
   const ct = resp.completionTokens || estimateTokens(resp.text || '');
   if (settings.showCost && (pt || ct)) {
-    parts.push(`~${fmtTokens(pt + ct)}토큰`);
+    parts.push(t('stats.tokens', { n: fmtTokens(pt + ct) }));
     // Prefer the live settings model (carries any user price override).
     const live = (model && settings.models.find((x) => x.id === model.id)) || model;
     const cost = estimateCost(live, pt, ct);
     if (cost != null) {
       parts.push(`~$${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(3)}`);
-      el.title = `입력 ~${pt.toLocaleString()} · 출력 ~${ct.toLocaleString()} 토큰 (추정)`;
+      el.title = t('stats.io_title', { in: pt.toLocaleString(), out: ct.toLocaleString() });
     }
   } else if (resp.text) {
-    parts.push(`${resp.text.length.toLocaleString()}자`);
+    parts.push(t('stats.chars', { n: resp.text.length.toLocaleString() }));
   }
   el.textContent = parts.join(' · ');
 }
@@ -1788,7 +1955,7 @@ function enhanceResponseLinks(container) {
   const previews = h('div', { class: 'link-previews' });
   for (const url of imageLinks) {
     previews.appendChild(h('a', { href: url, target: '_blank', rel: 'noopener noreferrer', title: url }, [
-      h('img', { src: url, alt: '링크 이미지 미리보기', loading: 'lazy' }),
+      h('img', { src: url, alt: t('img.preview_alt'), loading: 'lazy' }),
     ]));
   }
   container.appendChild(previews);
@@ -1815,7 +1982,7 @@ async function copyText(text, btn) {
     await navigator.clipboard.writeText(text);
     if (btn) { const old = btn.textContent; btn.textContent = '✓'; setTimeout(() => { btn.textContent = old; }, 1000); }
   } catch {
-    alert('복사에 실패했습니다.');
+    alert(t('copy.fail'));
   }
 }
 
@@ -1831,7 +1998,7 @@ function editQuestion(turn) {
 
 // Re-send the exact same question as a new message in the current chat.
 async function resendQuestion(turn) {
-  if (activeController) { alert('진행 중인 응답이 끝난 뒤 다시 시도해주세요.'); return; }
+  if (activeController) { alert(t('alert.wait_response')); return; }
   promptInput.value = turn.user || '';
   autoGrow();
   await send();
@@ -1841,21 +2008,21 @@ function applyRespToBody(body, resp, turn, key) {
   body.classList.remove('streaming');
   if (!resp || resp.status === 'pending') {
     if (key === 'master') renderMasterProgress(body, turn);
-    else body.innerHTML = '<span class="card-status status-wait status-pending">서버 응답 대기 중…</span>';
+    else body.innerHTML = `<span class="card-status status-wait status-pending">${escapeText(t('status.pending_wait'))}</span>`;
     return;
   }
   if (resp.status === 'streaming') {
     body.classList.add('streaming');
     if (key === 'master' && !resp.text) {
       body.classList.remove('streaming');
-      body.innerHTML = '<span class="card-status status-wait">마스터가 전체 내용 취합 중…</span>';
+      body.innerHTML = `<span class="card-status status-wait">${escapeText(t('status.master_collecting'))}</span>`;
     } else {
       renderResponseHtml(body, resp.text || '');
     }
     return;
   }
   if (resp.status === 'error') {
-    body.innerHTML = `<span class="card-status status-err">⚠ ${escapeText(resp.error || '오류')}</span>`;
+    body.innerHTML = `<span class="card-status status-err">⚠ ${escapeText(resp.error || t('common.error'))}</span>`;
     return;
   }
   // done
@@ -1868,14 +2035,14 @@ function applyRespToBody(body, resp, turn, key) {
 }
 
 function modelProgressLabel(resp) {
-  if (!resp || resp.status === 'pending') return '서버 응답 대기 중';
-  if (resp.status === 'streaming') return '응답 중';
-  if (resp.status === 'done') return '응답 완료';
+  if (!resp || resp.status === 'pending') return t('statuslabel.pending');
+  if (resp.status === 'streaming') return t('statuslabel.streaming');
+  if (resp.status === 'done') return t('statuslabel.done');
   if (resp.status === 'error') {
-    if (resp.error && resp.error.includes('타임아웃')) return '타임아웃';
-    return resp.error === '중단됨' ? '응답 중단됨' : '오류';
+    if (isTimeoutError(resp.error)) return t('statuslabel.timeout');
+    return isAbortError(resp.error) ? t('statuslabel.aborted') : t('statuslabel.error');
   }
-  return '대기 중';
+  return t('statuslabel.waiting');
 }
 
 function modelProgressClass(resp) {
@@ -1889,7 +2056,7 @@ function modelProgressClass(resp) {
 function renderMasterProgress(body, turn) {
   const models = turnModels(turn);
   if (!models.length) {
-    body.innerHTML = '<span class="card-status status-wait status-pending">서브 에이전트 응답 대기 중…</span>';
+    body.innerHTML = `<span class="card-status status-wait status-pending">${escapeText(t('status.sub_pending'))}</span>`;
     return;
   }
   const wrap = h('div', { class: 'master-progress-list' });
@@ -1911,7 +2078,7 @@ function renderMasterProgress(body, turn) {
   });
   const canForceMaster = (turn.master && (turn.master.status === 'pending' || turn.master.status === 'error')) && completed.length > 0;
   if (canForceMaster) {
-    const btnText = turn.master.status === 'error' ? '요약 다시 실행 (모델 선택)' : '지금까지 응답으로 요약 실행';
+    const btnText = turn.master.status === 'error' ? t('master.force_error') : t('master.force_now');
     const forceBtn = h('button', {
       class: 'btn btn-sm',
       style: 'margin-top: 8px; font-size: 12px; width: 100%;',
@@ -1930,12 +2097,12 @@ function triggerEarlyMaster(turn) {
     return r && r.status === 'done' && r.text;
   });
   if (completed.length === 0) {
-    alert('아직 응답 완료된 모델이 없습니다.');
+    alert(t('alert.no_done_model'));
     return;
   }
   showMasterModelSelector(turn, master, completed).then(async (sel) => {
     if (!sel || sel.selected.length === 0) return;
-    if (activeController) { alert('진행 중인 작업이 끝난 뒤 다시 시도해주세요.'); return; }
+    if (activeController) { alert(t('alert.wait_task')); return; }
     activeController = new AbortController();
     setSending(true);
     try {
@@ -1951,11 +2118,11 @@ function triggerEarlyMaster(turn) {
 // On-demand cross-check (master-off): one model identifies agreements/conflicts across answers.
 async function triggerCrossCheck(turn) {
   if (turn.crossCheck && turn.crossCheck.status === 'streaming') return;
-  if (activeController) { alert('진행 중인 작업이 끝난 뒤 다시 시도해주세요.'); return; }
+  if (activeController) { alert(t('alert.wait_task')); return; }
   const completed = turnModels(turn).filter((m) => { const r = turn.responses?.[m.id]; return r && r.status === 'done' && r.text; });
-  if (completed.length < 2) { alert('비교할 완료된 답변이 2개 이상 필요합니다.'); return; }
+  if (completed.length < 2) { alert(t('alert.need_two_done')); return; }
   const aggregator = pickSummarizerModel();
-  if (!aggregator) { showInlineNotice('교차검증할 모델의 API 키가 없습니다. ⚙️ 설정에서 키를 입력하세요.'); return; }
+  if (!aggregator) { showInlineNotice(t('crosscheck.no_key')); return; }
   activeController = new AbortController();
   setSending(true);
   try {
@@ -1972,7 +2139,7 @@ async function runCrossCheck(turn, aggregator, selectedModels, signal) {
   // model by id so a model that already answered isn't wrongly rejected as "no API key".
   aggregator = settings.models.find((m) => m.id === aggregator.id) || aggregator;
   if (aggregator.type !== 'local' && !aggregator.apiKey) {
-    turn.crossCheck = { status: 'error', error: '교차검증 모델 API 키가 없습니다.', text: '', by: aggregator.id };
+    turn.crossCheck = { status: 'error', error: t('crosscheck.no_key_err'), text: '', by: aggregator.id };
     renderMessages({ keepScroll: true });
     return;
   }
@@ -1988,14 +2155,14 @@ async function runCrossCheck(turn, aggregator, selectedModels, signal) {
     ccTimeout = setTimeout(() => {
       if (cc.status === 'streaming' && !cc.text) {
         cc.status = 'error';
-        cc.error = `${Math.round(timeoutMs / 1000)}초 타임아웃`;
+        cc.error = t('timeout.secs', { s: Math.round(timeoutMs / 1000) });
         refreshCard(turn, 'crosscheck', cc);
         // Substitute aggregator on timeout, mirroring the master flow.
         const done2 = turnModels(turn).filter((m) => { const r = turn.responses?.[m.id]; return r && r.status === 'done' && r.text; });
         if (done2.length >= 2) {
           showMasterModelSelector(turn, aggregator, done2).then(async (selRes) => {
             if (!selRes || selRes.selected.length < 2) return;
-            if (activeController) { alert('진행 중인 작업이 끝난 뒤 다시 시도해주세요.'); return; }
+            if (activeController) { alert(t('alert.wait_task')); return; }
             activeController = new AbortController();
             setSending(true);
             try {
@@ -2011,14 +2178,14 @@ async function runCrossCheck(turn, aggregator, selectedModels, signal) {
     }, timeoutMs);
   }
 
-  let block = `[질문]\n${turn.user}\n\n[각 모델의 답변]\n`;
+  let block = `${t('block.question')}\n${turn.user}\n\n${t('block.each_model_answer')}\n`;
   for (const m of selectedModels) {
     const r = turn.responses[m.id];
     if (r && r.status === 'done' && r.text) block += `\n### ${m.label}\n${r.text}\n`;
   }
   const messages = [];
   pushSystemLayers(messages, 'master'); // taste + RICH, no continuity L0
-  messages.push({ role: 'system', content: CROSS_CHECK_INSTRUCTION });
+  messages.push({ role: 'system', content: t('instr.crosscheck') });
   messages.push({ role: 'user', content: block });
   cc.promptTokens = estimateTokens(messages.map((m) => m.content).join('\n'));
 
@@ -2030,7 +2197,7 @@ async function runCrossCheck(turn, aggregator, selectedModels, signal) {
         onRetry: (attempt, delay) => {
           if (turn.crossCheck !== cc || cc.status !== 'streaming' || cc.text) return;
           const b = document.getElementById(`body-${turn.id}-crosscheck`);
-          if (b) { b.classList.remove('streaming'); b.innerHTML = `<span class="card-status status-wait">서버 혼잡 — ${Math.round(delay / 1000)}초 후 자동 재시도… (${attempt}/2)</span>`; }
+          if (b) { b.classList.remove('streaming'); b.innerHTML = `<span class="card-status status-wait">${escapeText(t('status.retry_busy', { delay: Math.round(delay / 1000), attempt }))}</span>`; }
         },
         onChunk: (_c, full) => {
           if (turn.crossCheck !== cc || cc.status !== 'streaming') return; // superseded by a newer run
@@ -2045,7 +2212,7 @@ async function runCrossCheck(turn, aggregator, selectedModels, signal) {
         resolve();
       }).catch((err) => {
         if (ccTimeout) { clearTimeout(ccTimeout); ccTimeout = null; }
-        if (signal.aborted) { cc.status = cc.text ? 'done' : 'error'; cc.error = '중단됨'; }
+        if (signal.aborted) { cc.status = cc.text ? 'done' : 'error'; cc.error = t('status.aborted'); }
         else { cc.status = 'error'; cc.error = String(err.message || err); }
         resolve();
       });
@@ -2055,7 +2222,7 @@ async function runCrossCheck(turn, aggregator, selectedModels, signal) {
     await Promise.race([wrapped, timeoutP]);
     if (raceTimer) { clearTimeout(raceTimer); raceTimer = null; }
   } catch (err) {
-    if (signal.aborted) { cc.status = cc.text ? 'done' : 'error'; cc.error = '중단됨'; }
+    if (signal.aborted) { cc.status = cc.text ? 'done' : 'error'; cc.error = t('status.aborted'); }
     else { cc.status = 'error'; cc.error = String(err.message || err); }
   } finally {
     if (ccTimeout) { clearTimeout(ccTimeout); ccTimeout = null; }
@@ -2094,16 +2261,16 @@ function showMasterModelSelector(turn, defaultAggregator, candidates) {
 
     const card = h('div', { class: 'modal-card' });
     card.appendChild(h('div', { class: 'modal-head' }, [
-      h('h2', { text: '요약 모델 · 포함할 답변 선택' }),
+      h('h2', { text: t('selector.title') }),
       h('button', { class: 'icon-btn', onclick: () => finish(null) }, '✕')
     ]));
 
     const bodyEl = h('div', { class: 'modal-body' });
     bodyEl.appendChild(h('p', { class: 'muted', style: 'margin-bottom:8px; font-size:12px;' },
-      '요약을 수행할 모델(집계자)과 요약에 포함할 답변을 고르세요. 마스터가 실패·지연되면 다른 모델로 요약할 수 있습니다.'));
+      t('selector.desc')));
 
     const defId = candidates.some((m) => m.id === defaultAggregator?.id) ? defaultAggregator.id : candidates[0].id;
-    bodyEl.appendChild(h('div', { class: 'sel-group-label' }, '요약을 수행할 모델'));
+    bodyEl.appendChild(h('div', { class: 'sel-group-label' }, t('selector.group_model')));
     const aggRadios = {};
     candidates.forEach((m) => {
       const radio = h('input', { type: 'radio', name: 'aggregator' });
@@ -2112,7 +2279,7 @@ function showMasterModelSelector(turn, defaultAggregator, candidates) {
       bodyEl.appendChild(h('label', { class: 'opt-row' }, [radio, h('span', { text: m.label })]));
     });
 
-    bodyEl.appendChild(h('div', { class: 'sel-group-label' }, '요약에 포함할 답변'));
+    bodyEl.appendChild(h('div', { class: 'sel-group-label' }, t('selector.group_answers')));
     const checks = {};
     candidates.forEach((m) => {
       const r = turn.responses?.[m.id];
@@ -2124,7 +2291,7 @@ function showMasterModelSelector(turn, defaultAggregator, candidates) {
     card.appendChild(bodyEl);
 
     card.appendChild(h('div', { class: 'modal-foot' }, [
-      h('button', { class: 'btn btn-ghost', onclick: () => finish(null) }, '취소'),
+      h('button', { class: 'btn btn-ghost', onclick: () => finish(null) }, t('common.cancel')),
       h('button', {
         class: 'btn btn-primary',
         onclick: () => {
@@ -2132,7 +2299,7 @@ function showMasterModelSelector(turn, defaultAggregator, candidates) {
           const aggregator = candidates.find((m) => aggRadios[m.id].checked) || candidates.find((m) => m.id === defId);
           finish(selected.length > 0 && aggregator ? { aggregator, selected } : null);
         }
-      }, '요약 실행')
+      }, t('selector.run'))
     ]));
 
     modal.appendChild(card);
@@ -2158,7 +2325,7 @@ function citationLabel(c) {
 
 function renderCitations(body, citations) {
   const wrap = h('div', { class: 'citations' }, [
-    h('div', { class: 'citations-title' }, '🔎 출처'),
+    h('div', { class: 'citations-title' }, t('citations.title')),
   ]);
   const ol = document.createElement('ol');
   citations.forEach((c) => {
@@ -2223,14 +2390,14 @@ function renderCompactionCard(turn) {
   const wrap = h('div', { class: 'turn compaction-turn', id: `turn-${turn.id}` });
   const card = h('div', { class: 'compaction-card' }, [
     h('div', { class: 'compaction-head' }, [
-      h('span', { class: 'compaction-title' }, `🗜 이전 대화 ${turn.compactedCount || ''}개가 아래로 요약되었습니다`),
-      h('span', { class: 'compaction-sub' }, '채팅 내용은 그대로 남아 있어요. 이후 질문에는 이 요약 + 최근 대화만 전송됩니다 (토큰 절약).'),
+      h('span', { class: 'compaction-title' }, t('compaction.card_title', { n: turn.compactedCount || '' })),
+      h('span', { class: 'compaction-sub' }, t('compaction.card_sub')),
     ]),
   ]);
   const body = h('div', { class: 'compaction-body md' });
   renderResponseHtml(body, turn.summary || '');
   card.appendChild(h('details', { class: 'compaction-details' }, [
-    h('summary', {}, '요약 내용 보기'),
+    h('summary', {}, t('compaction.view')),
     body,
   ]));
   wrap.appendChild(card);
@@ -2298,31 +2465,31 @@ function renderEnsembleBar(turn, info) {
 
   let cls = 'ensemble-wait', label;
   if (!info.settled) {
-    label = `⏳ 답변 기다리는 중… (${info.doneCount}/${info.total} 완료)`;
+    label = t('ensemble.waiting', { done: info.doneCount, total: info.total });
   } else if (!info.ready) {
-    label = '완료된 답변이 부족해요 (비교하려면 2개 이상 필요)';
+    label = t('ensemble.insufficient');
   } else if (sig) {
     cls = `ensemble-${sig.state}`;
-    label = sig.state === 'agree' ? '✓ 답변 방향이 대체로 일치'
-      : sig.state === 'diverge' ? '⚠ 답변이 갈립니다 — 교차 확인 권장'
-      : '~ 부분적으로 일치';
+    label = sig.state === 'agree' ? t('ensemble.agree')
+      : sig.state === 'diverge' ? t('ensemble.diverge')
+      : t('ensemble.partial');
   } else {
     cls = 'ensemble-ready';
-    label = '답변 비교 준비 완료';
+    label = t('ensemble.ready');
   }
 
-  const btnLabel = ccRunning ? '교차검증 중…'
-    : (cc && (cc.status === 'done' || cc.status === 'error')) ? '🔍 교차검증 다시' : '🔍 교차검증';
+  const btnLabel = ccRunning ? t('crosscheck.running')
+    : (cc && (cc.status === 'done' || cc.status === 'error')) ? t('crosscheck.again') : t('crosscheck.label');
   const barTitle = info.ready
-    ? '완료된 답변들의 표현 유사도 근사치입니다. 정확한 비교는 🔍 교차검증을 눌러 확인하세요.'
-    : '모든 모델의 답변이 도착하면(또는 타임아웃되면) 교차검증을 사용할 수 있어요.';
+    ? t('ensemble.tip_ready')
+    : t('ensemble.tip_wait');
 
   const right = [];
-  if (info.ready && sig) right.push(h('span', { class: 'ens-score', text: `유사도 ~${Math.round(sig.score * 100)}%` }));
+  if (info.ready && sig) right.push(h('span', { class: 'ens-score', text: t('ensemble.similarity', { pct: Math.round(sig.score * 100) }) }));
   right.push(h('button', {
     class: 'ens-cc-btn',
     disabled: !enabled,
-    title: enabled ? '완료된 답변들의 공통점·차이점을 한 모델이 짚어 줍니다 (토큰 사용)' : '모든 답변이 도착하면 눌러서 교차 확인할 수 있어요',
+    title: enabled ? t('crosscheck.btn_enabled') : t('crosscheck.btn_disabled'),
     onclick: (e) => { e.stopPropagation(); triggerCrossCheck(turn); },
   }, btnLabel));
 
@@ -2348,11 +2515,11 @@ function renderTurn(turn) {
   }
   if (turn.user) bubble.appendChild(document.createTextNode(turn.user));
   const bubbleActions = h('div', { class: 'bubble-actions' }, [
-    h('button', { class: 'q-act', title: '질문 복사',
+    h('button', { class: 'q-act', title: t('q.copy'),
       onclick: (e) => copyText(turn.user || '', e.currentTarget) }, '⧉'),
-    h('button', { class: 'q-act', title: '질문 수정 후 다시 보내기',
+    h('button', { class: 'q-act', title: t('q.edit_resend'),
       onclick: () => editQuestion(turn) }, '✎'),
-    h('button', { class: 'q-act', title: '같은 질문 다시 보내기',
+    h('button', { class: 'q-act', title: t('q.resend'),
       onclick: () => resendQuestion(turn) }, '↻'),
   ]);
   const userRow = h('div', { class: 'user-row' }, [
@@ -2370,7 +2537,7 @@ function renderTurn(turn) {
     // an expandable section; if a master summary exists it's shown on top.
     const grid = h('div', { class: 'unified-inner' }, models.map((m) => modelCard(turn, m)));
     const details = h('details', { class: 'unified-details' }, [
-      h('summary', {}, `개별 모델 답변 ${models.length}개 펼쳐 보기`),
+      h('summary', {}, t('unified.expand', { n: models.length })),
       grid,
     ]);
     if (masterModel) {
@@ -2379,7 +2546,7 @@ function renderTurn(turn) {
       // No master → still distinct from split: stacked single column + hint.
       details.open = true;
       answers = h('div', { class: 'answers-unified' }, [
-        h('p', { class: 'unified-hint' }, '💡 마스터 요약을 켜면 4개 답을 하나로 합쳐 줍니다. 지금은 개별 답을 펼쳐 보세요.'),
+        h('p', { class: 'unified-hint' }, t('unified.hint')),
         details,
       ]);
     }
@@ -2432,18 +2599,18 @@ function assistantTextForHistory(turn, modelId, opts = {}) {
     if (compact) {
       // Old turn: keep only the shared official conclusion (the "spine") and drop
       // the bulky own answer to bound long-conversation token growth.
-      return '[이전 공식 종합 — 사용자가 보고 이어가는 기준]\n' + master;
+      return t('hist.prev_synth_user') + '\n' + master;
     }
     // Recent turn — hybrid: shared official synthesis + this model's own answer (keeps its voice).
     return (
-      '[이전 공식 종합 — 사용자가 보고 이어가는 기준]\n' + master +
-      '\n\n[내가 그 턴에 제출한 개별 답 — 내 관점·세부 참고]\n' + own
+      t('hist.prev_synth_user') + '\n' + master +
+      '\n\n' + t('hist.my_answer') + '\n' + own
     );
   }
   if (own) {
     // No master that turn. Recent → full own; old → truncated so it doesn't dominate.
     if (compact && own.length > HISTORY_OLD_OWN_CHARS) {
-      return own.slice(0, HISTORY_OLD_OWN_CHARS) + '\n…(이전 답 일부 생략)';
+      return own.slice(0, HISTORY_OLD_OWN_CHARS) + t('hist.prev_answer_trunc');
     }
     return own;
   }
@@ -2452,7 +2619,7 @@ function assistantTextForHistory(turn, modelId, opts = {}) {
     // conclusion. Hand it that synthesis so it can rejoin coherently, clearly marked
     // as NOT its own words so it doesn't adopt the master's voice (keeps diversity).
     return (
-      '[이전 공식 종합 — 이 턴에는 내가 응답하지 못했음. 내 답은 아니지만 그룹이 도달한 공식 결론이니 맥락으로만 참고]\n' +
+      t('hist.absent_synth') + '\n' +
       String(turn.master.text).trim()
     );
   }
@@ -2478,7 +2645,7 @@ function latestSuccessfulMasterBefore(beforeTurn) {
  */
 function pushSystemLayers(msgs, kind = 'model') {
   if (kind === 'model') {
-    msgs.push({ role: 'system', content: CONTINUITY_INSTRUCTION });
+    msgs.push({ role: 'system', content: t('instr.continuity') });
   }
 
   const chatPrompt = currentChat?.chatPrompt?.trim() || '';
@@ -2494,7 +2661,7 @@ function pushSystemLayers(msgs, kind = 'model') {
     : null;
   const effectiveRich = chatRich !== null ? chatRich : settings.richStyle;
   if (effectiveRich !== false) {
-    msgs.push({ role: 'system', content: RICH_STYLE_INSTRUCTION });
+    msgs.push({ role: 'system', content: t('instr.rich') });
   }
 }
 
@@ -2524,7 +2691,7 @@ function buildHistory(model, currentTurn) {
   // and skip the turns it already covers.
   const marker = latestCompaction(currentTurn.createdAt);
   if (marker && marker.summary) {
-    msgs.push({ role: 'system', content: '[이전 대화 요약 — 앞선 대화의 핵심입니다. 이 맥락을 이어서 답하세요]\n' + marker.summary });
+    msgs.push({ role: 'system', content: t('hist.prev_summary') + '\n' + marker.summary });
   }
 
   // Eligible past turns (strictly before the current one) that this model can carry.
@@ -2576,11 +2743,7 @@ const COMPACT_TOKEN_BUDGET = 16000; // suggest folding once the foldable (old) r
 const COMPACT_KEEP = 10;      // recent turns kept verbatim (not folded into the summary)
 const COMPACT_MIN = 6;        // don't bother folding fewer than this many turns
 
-const COMPACTION_INSTRUCTION =
-  '당신은 긴 대화를 이후 대화에 필요한 핵심만 남겨 압축하는 요약가입니다. ' +
-  '결정된 사항, 사용자의 선호·전제·제약, 중요한 고유명사·수치·용어 정의, 아직 해결되지 않은 질문을 반드시 보존하세요. ' +
-  '잡담과 중복은 지우고, 이후 어떤 모델이든 이 요약만 보고 맥락을 자연스럽게 이어갈 수 있도록 ' +
-  '구조화된 마크다운(제목·불릿)으로 간결하게 작성하세요. 새로운 내용을 지어내지 마세요.';
+// COMPACTION_INSTRUCTION now lives in src/i18n.js as t('instr.compaction').
 
 // The single compaction marker turn for this chat that precedes `beforeCreatedAt`.
 function latestCompaction(beforeCreatedAt = Infinity) {
@@ -2629,18 +2792,18 @@ function pickSummarizerModel() {
 
 function buildCompactionInput(prevSummary, turnsToCompact) {
   let s = '';
-  if (prevSummary) s += '[기존 요약]\n' + prevSummary + '\n\n';
-  s += '[압축할 대화]\n';
-  turnsToCompact.forEach((t, i) => {
-    const q = (t.user || '(첨부만)').slice(0, 1000);
+  if (prevSummary) s += t('block.prev_summary_existing') + '\n' + prevSummary + '\n\n';
+  s += t('block.to_compress') + '\n';
+  turnsToCompact.forEach((t2, i) => {
+    const q = (t2.user || t('block.attach_only')).slice(0, 1000);
     let a;
-    if (turnMasterReady(t)) a = String(t.master.text).trim();
+    if (turnMasterReady(t2)) a = String(t2.master.text).trim();
     else {
-      const first = (t.modelIds || []).map((id) => t.responses?.[id])
+      const first = (t2.modelIds || []).map((id) => t2.responses?.[id])
         .find((r) => r && r.status === 'done' && r.text);
-      a = first ? first.text : '(응답 없음)';
+      a = first ? first.text : t('block.no_response');
     }
-    s += `\n#${i + 1}\n사용자: ${q}\n정리: ${a.slice(0, 1200)}\n`;
+    s += `\n#${i + 1}\n${t('block.user_prefix')}: ${q}\n${t('block.summary_prefix')}: ${a.slice(0, 1200)}\n`;
   });
   return s;
 }
@@ -2650,7 +2813,7 @@ async function runCompaction(signal) {
   if (!currentChat) return false;
   const chatId = currentChat.id;
   const summarizer = pickSummarizerModel();
-  if (!summarizer) { showInlineNotice('요약할 모델의 API 키가 없습니다. ⚙️ 설정에서 키를 입력하세요.'); return false; }
+  if (!summarizer) { showInlineNotice(t('notice.summ_no_key')); return false; }
 
   const prev = latestCompaction();
   const reals = turns.filter((t) => t.kind !== 'compaction' && (!prev || t.createdAt > prev.createdAt));
@@ -2659,11 +2822,11 @@ async function runCompaction(signal) {
 
   const input = buildCompactionInput(prev?.summary || '', toCompact);
   const messages = [
-    { role: 'system', content: COMPACTION_INSTRUCTION },
+    { role: 'system', content: t('instr.compaction') },
     { role: 'user', content: input },
   ];
 
-  showInlineNotice('🗜 이전 대화를 요약하는 중… (잠시만요)');
+  showInlineNotice(t('notice.summarizing'));
   let summary = '';
   try {
     summary = await streamChat(summarizer, messages, {
@@ -2672,10 +2835,10 @@ async function runCompaction(signal) {
     });
   } catch (err) {
     document.querySelector('.inline-notice-layer')?.remove();
-    if (!(signal && signal.aborted)) showInlineNotice('요약에 실패했습니다: ' + String(err.message || err));
+    if (!(signal && signal.aborted)) showInlineNotice(t('notice.summ_fail', { err: String(err.message || err) }));
     return false;
   }
-  if (!summary || !summary.trim()) { showInlineNotice('요약 결과가 비어 있어 압축을 건너뜁니다.'); return false; }
+  if (!summary || !summary.trim()) { showInlineNotice(t('notice.summ_empty')); return false; }
   // If Stop was pressed after the summary text arrived, don't commit a marker
   // (send() also bails, so the message the user was sending isn't lost).
   if (signal && signal.aborted) { document.querySelector('.inline-notice-layer')?.remove(); return false; }
@@ -2708,7 +2871,7 @@ async function runCompaction(signal) {
     turns.sort((a, b) => a.createdAt - b.createdAt);
     currentChat.compactHintAt = 0;
     renderMessages();
-    showInlineNotice(`✅ 이전 ${marker.compactedCount}개 대화를 요약했습니다. 이후 질문은 요약 + 최근 대화만 전송됩니다.`);
+    showInlineNotice(t('notice.compacted', { n: marker.compactedCount }));
   }
   return true;
 }
@@ -2725,16 +2888,16 @@ function showCompactionPrompt(tokens) {
     modal.appendChild(h('div', { class: 'modal-backdrop', onclick: () => done('continue') }));
     const card = h('div', { class: 'modal-card' }, [
       h('div', { class: 'modal-head' }, [
-        h('h2', {}, '🗜 대화가 길어졌어요'),
+        h('h2', {}, t('compaction.prompt_title')),
         h('button', { class: 'icon-btn', onclick: () => done('continue') }, '✕'),
       ]),
       h('div', { class: 'modal-body' }, [
-        h('p', {}, `이 대화가 길어져, 매 질문마다 함께 전송되는 이전 맥락이 약 ${Math.max(1, Math.round(tokens / 1000))}K 토큰까지 커졌어요. 그만큼 토큰(비용)이 늘어납니다.`),
-        h('p', { class: 'muted' }, '완전히 새로운 주제라면 “+ 새 채팅”이 가장 절약돼요. 지금 맥락을 이어가려면 앞부분 대화를 하나의 요약으로 압축할 수 있어요. 채팅 화면의 기존 내용은 그대로 남고 요약 카드가 하나 추가되며, 이후 질문에는 (요약 + 최근 대화)만 전송됩니다.'),
+        h('p', {}, t('compaction.prompt_p', { k: Math.max(1, Math.round(tokens / 1000)) })),
+        h('p', { class: 'muted' }, t('compaction.prompt_muted')),
       ]),
       h('div', { class: 'modal-foot' }, [
-        h('button', { class: 'btn btn-ghost', onclick: () => done('continue') }, '그냥 계속'),
-        h('button', { class: 'btn btn-primary', onclick: () => done('compact') }, '이전 대화 요약하기'),
+        h('button', { class: 'btn btn-ghost', onclick: () => done('continue') }, t('compaction.just_continue')),
+        h('button', { class: 'btn btn-primary', onclick: () => done('compact') }, t('compaction.do_summarize')),
       ]),
     ]);
     modal.appendChild(card);
@@ -2753,19 +2916,19 @@ function updateCompactBtn() {
   const canCompact = (uncompactedCount() - COMPACT_KEEP) >= COMPACT_MIN;
   btn.classList.toggle('is-dim', !canCompact);
   btn.title = canCompact
-    ? '이전 대화를 짧게 요약해서 다음 질문부터 토큰(비용)을 줄여줍니다. 화면의 대화 내용은 그대로 유지돼요.'
-    : '대화가 더 길어지면 쓸 수 있어요. 이전 대화를 짧게 요약해 다음 질문부터 토큰(비용)을 줄여주는 기능입니다.';
+    ? t('top.compact_title')
+    : t('top.compact_title_inactive');
 }
 
 // Manual, on-demand compaction (top-bar button) — same fold as the auto prompt.
 async function manualCompact() {
-  if (activeController) { alert('진행 중인 작업이 끝난 뒤 다시 시도해주세요.'); return; }
+  if (activeController) { alert(t('alert.wait_task')); return; }
   if (!currentChat) return;
   if ((uncompactedCount() - COMPACT_KEEP) < COMPACT_MIN) {
-    showInlineNotice('아직 요약할 만큼 대화가 길지 않습니다.');
+    showInlineNotice(t('notice.not_long_enough'));
     return;
   }
-  if (!confirm('이전 대화를 하나의 요약으로 압축할까요?\n\n채팅 화면의 내용은 그대로 남고, 이후 질문에는 (요약 + 최근 대화)만 전송돼 토큰을 아낍니다.')) return;
+  if (!confirm(t('confirm.manual_compact'))) return;
   activeController = new AbortController();
   setSending(true);
   try {
@@ -2782,12 +2945,12 @@ async function send() {
   if ((!text && !pendingAttachments.length) || activeController) return;
 
   if (pendingAttachments.some((a) => a.extracting)) {
-    alert('PDF를 읽는 중입니다. 잠시 후 다시 전송해주세요.');
+    alert(t('alert.pdf_reading'));
     return;
   }
 
   const active = enabledModels(settings);
-  if (!active.length) { alert('활성화된 모델이 없습니다. 설정 또는 하단 칩에서 모델을 켜주세요.'); return; }
+  if (!active.length) { alert(t('alert.no_active_model')); return; }
 
   // Claim the send lock up-front so a second Enter (e.g. while the compaction prompt
   // is open) can't start an overlapping send. try/finally guarantees cleanup.
@@ -2795,7 +2958,7 @@ async function send() {
   const signal = activeController.signal;
   setSending(true);
   try {
-  const title = text ? text.slice(0, 40) : '첨부 파일';
+  const title = text ? text.slice(0, 40) : t('chat.attach_title');
 
   // Ensure a chat room exists
   if (!currentChat) {
@@ -2841,7 +3004,7 @@ async function send() {
   // THIS turn (auto-off) and tell them why — add the key and it works next time.
   if (masterEnabled && masterModel && masterModel.type !== 'local' && !masterModel.apiKey) {
     masterEnabled = false;
-    showInlineNotice('👑 마스터 모델의 API 키가 없어 이번 답변은 요약 없이 진행합니다. ⚙️ 설정에서 키를 넣으면 다음부터 자동 요약됩니다.');
+    showInlineNotice(t('notice.master_no_key'));
   }
   if (masterEnabled) modelsSnap[masterModel.id] = { id: masterModel.id, type: masterModel.type, label: masterModel.label, model: masterModel.model };
 
@@ -2893,14 +3056,14 @@ async function send() {
       });
       if (completed.length === 0) {
         turn.master.status = 'error';
-        turn.master.error = '완료된 모델이 없습니다.';
+        turn.master.error = t('master.no_done');
         refreshCard(turn, 'master', turn.master);
       } else if (completed.length === active.length) {
         await runMaster(turn, masterModel, active, signal);
         // Summary failed (server error / blank) even after auto-retries, and it wasn't a timeout
         // (the timeout path already offers this popup) → offer to summarise with another completed
         // model, same as the timeout flow.
-        if (!signal.aborted && turn.master?.status === 'error' && !String(turn.master.error || '').includes('타임아웃')) {
+        if (!signal.aborted && turn.master?.status === 'error' && !isTimeoutError(turn.master.error)) {
           const done = turnModels(turn).filter((m) => { const r = turn.responses?.[m.id]; return r && r.status === 'done' && r.text; });
           if (done.length > 0) {
             const sel = await showMasterModelSelector(turn, masterModel, done);
@@ -2920,7 +3083,7 @@ async function send() {
     }
   } else if (masterEnabled && signal.aborted && turn.master?.status === 'pending') {
     turn.master.status = 'error';
-    turn.master.error = '중단됨';
+    turn.master.error = t('status.aborted');
     refreshCard(turn, 'master', turn.master);
   }
 
@@ -2939,7 +3102,7 @@ async function runModel(turn, model, signal) {
 
   if (model.type !== 'local' && !model.apiKey) {
     resp.status = 'error';
-    resp.error = 'API 키가 설정되지 않았습니다. ⚙️ 설정에서 키를 입력하세요.';
+    resp.error = t('err.model_no_key');
     resp.text = '';
     resp.elapsedMs = undefined;
     refreshCard(turn, model.id, resp);
@@ -2959,15 +3122,15 @@ async function runModel(turn, model, signal) {
   refreshCard(turn, model.id, resp);
   refreshMasterProgress(turn);
 
-  // 모델 응답 타임아웃
-  const t = settings.timeoutMs;
-  const timeoutMs = t > 0 ? t : 0;
+  // 모델 응답 타임아웃 (model response timeout)
+  const tmo = settings.timeoutMs;
+  const timeoutMs = tmo > 0 ? tmo : 0;
   let responseTimeout = null;
   if (timeoutMs > 0) {
     responseTimeout = setTimeout(() => {
       if (resp.status === 'streaming' && !resp.text) {
         resp.status = 'error';
-        resp.error = `${Math.round(timeoutMs / 1000)}초 타임아웃`;
+        resp.error = t('timeout.secs', { s: Math.round(timeoutMs / 1000) });
         refreshCard(turn, model.id, resp);
         refreshMasterProgress(turn);
         updateTurn(session.key, turn, session.id).catch(() => {});
@@ -2989,7 +3152,7 @@ async function runModel(turn, model, signal) {
       onRetry: (attempt, delay) => {
         if (resp._gen !== respGen || resp.status !== 'streaming' || resp.text) return;
         const b = document.getElementById(`body-${turn.id}-${model.id}`);
-        if (b) { b.classList.remove('streaming'); b.innerHTML = `<span class="card-status status-wait">서버 혼잡 — ${Math.round(delay / 1000)}초 후 자동 재시도… (${attempt}/2)</span>`; }
+        if (b) { b.classList.remove('streaming'); b.innerHTML = `<span class="card-status status-wait">${escapeText(t('status.retry_busy', { delay: Math.round(delay / 1000), attempt }))}</span>`; }
       },
       onCitations: model.type === 'local' ? undefined : (urls) => { if (resp._gen === respGen) resp.citations = urls; },
       onChunk: (_chunk, fullText) => {
@@ -3035,7 +3198,7 @@ async function runModel(turn, model, signal) {
           responseTimeout = null;
         }
         if (resp._gen !== respGen) { resolve(); return; } // superseded by a newer run for this model
-        if (signal.aborted) { resp.status = resp.text ? 'done' : 'error'; resp.error = '중단됨'; }
+        if (signal.aborted) { resp.status = resp.text ? 'done' : 'error'; resp.error = t('status.aborted'); }
         else { resp.status = 'error'; resp.error = String(err.message || err); }
         resolve();
       });
@@ -3056,7 +3219,7 @@ async function runModel(turn, model, signal) {
       clearTimeout(responseTimeout);
       responseTimeout = null;
     }
-    if (signal.aborted) { resp.status = resp.text ? 'done' : 'error'; resp.error = '중단됨'; }
+    if (signal.aborted) { resp.status = resp.text ? 'done' : 'error'; resp.error = t('status.aborted'); }
     else { resp.status = 'error'; resp.error = String(err.message || err); }
   } finally {
     if (responseTimeout) {
@@ -3091,7 +3254,7 @@ async function runMaster(turn, master, modelsForBlock, signal) {
   // "no API key" (and so the actual stream gets the real key).
   master = settings.models.find((m) => m.id === master.id) || master;
   if (master.type !== 'local' && !master.apiKey) {
-    turn.master = { status: 'error', error: '마스터 모델 API 키가 없습니다.', text: '' };
+    turn.master = { status: 'error', error: t('master.no_key'), text: '' };
     refreshCard(turn, 'master', turn.master);
     return;
   }
@@ -3116,15 +3279,15 @@ async function runMaster(turn, master, modelsForBlock, signal) {
   const startedAt = performance.now();
   refreshCard(turn, 'master', turn.master);
 
-  // 마스터 요약 타임아웃
-  const t = settings.timeoutMs;
-  const timeoutMs = t > 0 ? t : 0;
+  // 마스터 요약 타임아웃 (master summary timeout)
+  const tmo = settings.timeoutMs;
+  const timeoutMs = tmo > 0 ? tmo : 0;
   let masterTimeout = null;
   if (timeoutMs > 0) {
     masterTimeout = setTimeout(() => {
       if (turn.master.status === 'streaming' && !turn.master.text) {
         turn.master.status = 'error';
-        turn.master.error = `${Math.round(timeoutMs / 1000)}초 타임아웃`;
+        turn.master.error = t('timeout.secs', { s: Math.round(timeoutMs / 1000) });
         refreshCard(turn, 'master', turn.master);
         updateTurn(session.key, turn, session.id).catch(() => {});
 
@@ -3138,7 +3301,7 @@ async function runMaster(turn, master, modelsForBlock, signal) {
           if (mst) {
             showMasterModelSelector(turn, mst, completed).then(async (sel) => {
               if (!sel || sel.selected.length === 0) return;
-              if (activeController) { alert('진행 중인 작업이 끝난 뒤 다시 시도해주세요.'); return; }
+              if (activeController) { alert(t('alert.wait_task')); return; }
               activeController = new AbortController();
               setSending(true);
               try {
@@ -3159,9 +3322,9 @@ async function runMaster(turn, master, modelsForBlock, signal) {
   const prevMaster = latestSuccessfulMasterBefore(turn);
   let block = '';
   if (prevMaster) {
-    block += '[이전 공식 종합 — 참고]\n' + prevMaster + '\n\n';
+    block += t('block.prev_synth_ref') + '\n' + prevMaster + '\n\n';
   }
-  block += `[질문]\n${turn.user}\n\n[각 모델의 답변]\n`;
+  block += `${t('block.question')}\n${turn.user}\n\n${t('block.each_model_answer')}\n`;
   for (const m of modelsForBlock) {
     const r = turn.responses[m.id];
     if (r && r.status === 'done' && r.text) {
@@ -3172,7 +3335,7 @@ async function runMaster(turn, master, modelsForBlock, signal) {
   const messages = [];
   // Exclusive taste + RICH (no model-continuity L0), then master editor L0 instruction.
   pushSystemLayers(messages, 'master');
-  messages.push({ role: 'system', content: MASTER_INSTRUCTION });
+  messages.push({ role: 'system', content: t('instr.master') });
   messages.push({ role: 'user', content: block });
   turn.master.promptTokens = estimateTokens(messages.map((m) => m.content).join('\n'));
 
@@ -3186,7 +3349,7 @@ async function runMaster(turn, master, modelsForBlock, signal) {
         onRetry: (attempt, delay) => {
           if (turn._masterGen !== masterGen || turn.master.status !== 'streaming' || turn.master.text) return;
           const b = document.getElementById(`body-${turn.id}-master`);
-          if (b) { b.classList.remove('streaming'); b.innerHTML = `<span class="card-status status-wait">서버 혼잡 — ${Math.round(delay / 1000)}초 후 자동 재시도… (${attempt}/2)</span>`; }
+          if (b) { b.classList.remove('streaming'); b.innerHTML = `<span class="card-status status-wait">${escapeText(t('status.retry_busy', { delay: Math.round(delay / 1000), attempt }))}</span>`; }
         },
         onChunk: (_c, fullText) => {
           if (turn._masterGen !== masterGen || turn.master.status !== 'streaming') return;
@@ -3216,7 +3379,7 @@ async function runMaster(turn, master, modelsForBlock, signal) {
           masterTimeout = null;
         }
         if (turn._masterGen !== masterGen) { resolve(); return; } // superseded by a newer master run
-        if (signal.aborted) { turn.master.status = turn.master.text ? 'done' : 'error'; turn.master.error = '중단됨'; }
+        if (signal.aborted) { turn.master.status = turn.master.text ? 'done' : 'error'; turn.master.error = t('status.aborted'); }
         else { turn.master.status = 'error'; turn.master.error = String(err.message || err); }
         resolve();
       });
@@ -3231,7 +3394,7 @@ async function runMaster(turn, master, modelsForBlock, signal) {
       clearTimeout(masterTimeout);
       masterTimeout = null;
     }
-    if (signal.aborted) { turn.master.status = turn.master.text ? 'done' : 'error'; turn.master.error = '중단됨'; }
+    if (signal.aborted) { turn.master.status = turn.master.text ? 'done' : 'error'; turn.master.error = t('status.aborted'); }
     else { turn.master.status = 'error'; turn.master.error = String(err.message || err); }
   } finally {
     if (masterTimeout) {
@@ -3266,7 +3429,7 @@ function stop() {
 }
 
 async function regenerate(turn, cardKey) {
-  if (activeController) { alert('진행 중인 응답이 끝난 뒤 다시 시도해주세요.'); return; }
+  if (activeController) { alert(t('alert.wait_response')); return; }
   activeController = new AbortController();
   const signal = activeController.signal;
   setSending(true);
@@ -3296,42 +3459,42 @@ async function regenerate(turn, cardKey) {
 // =====================================================================
 function buildMarkdownExport() {
   const lines = [];
-  lines.push(`# ${currentChat?.title || '대화'}`);
+  lines.push(t('export.title', { title: currentChat?.title || t('chat.untitled_export') }));
   lines.push('');
-  for (const t of turns) {
-    if (t.kind === 'compaction') {
-      lines.push(`## 🗜 이전 대화 요약 (${t.compactedCount || ''}개 압축)`);
-      lines.push(t.summary || '');
+  for (const tn of turns) {
+    if (tn.kind === 'compaction') {
+      lines.push(t('export.compaction', { n: tn.compactedCount || '' }));
+      lines.push(tn.summary || '');
       lines.push('');
       lines.push('---');
       lines.push('');
       continue;
     }
-    lines.push(`## 🙋 질문`);
-    if (t.attachments?.length) {
-      lines.push(`*첨부: ${t.attachments.map((a) => a.name).join(', ')}*`);
+    lines.push(t('export.question'));
+    if (tn.attachments?.length) {
+      lines.push(t('export.attach', { names: tn.attachments.map((a) => a.name).join(', ') }));
       lines.push('');
     }
-    lines.push(t.user || '(첨부만)');
+    lines.push(tn.user || t('block.attach_only'));
     lines.push('');
-    const models = turnModels(t);
+    const models = turnModels(tn);
     for (const m of models) {
-      const r = t.responses?.[m.id];
+      const r = tn.responses?.[m.id];
       if (!r) continue;
       lines.push(`### 🤖 ${m.label} (${m.model})`);
-      lines.push(r.status === 'error' ? `> ⚠ ${r.error || '오류'}` : (r.text || ''));
+      lines.push(r.status === 'error' ? `> ⚠ ${r.error || t('common.error')}` : (r.text || ''));
       lines.push('');
     }
-    if (t.masterEnabled && t.master) {
-      const mm = t.models?.[t.master.by || t.masterId];
-      lines.push(`### 👑 마스터 요약${mm ? ` · ${mm.label}` : ''}`);
-      lines.push(t.master.status === 'error' ? `> ⚠ ${t.master.error || '오류'}` : (t.master.text || ''));
+    if (tn.masterEnabled && tn.master) {
+      const mm = tn.models?.[tn.master.by || tn.masterId];
+      lines.push(t('export.master', { label: mm ? ` · ${mm.label}` : '' }));
+      lines.push(tn.master.status === 'error' ? `> ⚠ ${tn.master.error || t('common.error')}` : (tn.master.text || ''));
       lines.push('');
     }
-    if (t.crossCheck && t.crossCheck.text) {
-      const cm = t.models?.[t.crossCheck.by];
-      lines.push(`### 🔍 교차검증${cm ? ` · ${cm.label}` : ''}`);
-      lines.push(t.crossCheck.status === 'error' ? `> ⚠ ${t.crossCheck.error || '오류'}` : (t.crossCheck.text || ''));
+    if (tn.crossCheck && tn.crossCheck.text) {
+      const cm = tn.models?.[tn.crossCheck.by];
+      lines.push(t('export.crosscheck', { label: cm ? ` · ${cm.label}` : '' }));
+      lines.push(tn.crossCheck.status === 'error' ? `> ⚠ ${tn.crossCheck.error || t('common.error')}` : (tn.crossCheck.text || ''));
       lines.push('');
     }
     lines.push('---');
@@ -3341,7 +3504,7 @@ function buildMarkdownExport() {
 }
 
 function exportChat() {
-  if (!turns.length) { alert('내보낼 대화가 없습니다.'); return; }
+  if (!turns.length) { alert(t('alert.nothing_export')); return; }
   const md = buildMarkdownExport();
   const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
   const url = URL.createObjectURL(blob);
@@ -3368,7 +3531,7 @@ function setupSettingsModal() {
   $('#backupExportBtn').addEventListener('click', exportBackup);
   $('#backupImportBtn').addEventListener('click', () => {
     if (!$('#backupImportPass').value) {
-      $('#saveHint').textContent = '백업 암호를 입력해주세요.';
+      $('#saveHint').textContent = t('savehint.enter_backup_pass');
       $('#backupImportPass').focus();
       return;
     }
@@ -3391,7 +3554,7 @@ function openSettings() {
   if (timeoutInput) timeoutInput.value = Math.round((settings.timeoutMs || 60000) / 1000);
   const maxTokInput = $('#maxTokensInput');
   if (maxTokInput) maxTokInput.value = settings.maxTokens || 8192;
-  $('#resetUserLabel').textContent = session ? `'${session.displayName}'` : '현재 사용자';
+  $('#resetUserLabel').textContent = session ? `'${session.displayName}'` : t('reset.current_user');
   renderModelSettings();
   refreshStorageInfo();
   $('#saveHint').textContent = '';
@@ -3408,7 +3571,7 @@ async function openChatInstructions() {
   if (!currentChat) {
     // Create a new chat immediately when user wants to set per-chat instructions.
     // This allows configuring prompt + rich style before sending the first message.
-    currentChat = await createChat(session.id, session.key, '새 채팅');
+    currentChat = await createChat(session.id, session.key, t('chat.default_title'));
     chats.unshift(currentChat);
     renderChatTitle();
     renderChatList();
@@ -3476,10 +3639,10 @@ function renderChatTitle() {
 async function refreshStorageInfo() {
   const el = $('#storageInfo');
   const est = await estimateUsage();
-  if (!est || !est.quota) { el.textContent = '저장 공간 정보를 사용할 수 없습니다.'; return; }
+  if (!est || !est.quota) { el.textContent = t('storage.unavailable'); return; }
   const mb = (n) => (n / 1024 / 1024).toFixed(1);
   const pct = ((est.usage / est.quota) * 100).toFixed(1);
-  el.textContent = `사용 중인 저장 공간: ${mb(est.usage)} MB / ${mb(est.quota)} MB (${pct}%)`;
+  el.textContent = t('storage.usage', { used: mb(est.usage), quota: mb(est.quota), pct });
 }
 
 function renderModelSettings() {
@@ -3494,8 +3657,8 @@ function modelSettingRow(m) {
   const isLocal = m.type === 'local';
   const listId = `model-presets-${m.id}`;
   const keyField = h('div', { class: 'field full' }, [
-    h('label', { text: isLocal ? 'API 키 (선택)' : 'API 키' }),
-    h('input', { type: 'password', value: m.apiKey || '', placeholder: isLocal ? '필요 시 입력' : 'sk-...', 'data-id': m.id, 'data-k': 'apiKey' }),
+    h('label', { text: isLocal ? t('model.api_key_optional') : t('model.api_key') }),
+    h('input', { type: 'password', value: m.apiKey || '', placeholder: isLocal ? t('model.key_ph_local') : t('model.key_ph'), 'data-id': m.id, 'data-k': 'apiKey' }),
   ]);
 
   const row = h('div', { class: 'model-row', 'data-row': m.id }, [
@@ -3508,34 +3671,34 @@ function modelSettingRow(m) {
             target: '_blank',
             rel: 'noopener noreferrer',
             class: 'api-link',
-            'data-tip': `${meta.label} API 키 발급/관리 페이지로 이동`,
+            'data-tip': t('model.key_link_title', { label: meta.label }),
           }, '↗')
         : null,
       h('span', { class: 'spacer' }),
       h('label', { class: 'master-radio' }, [
         h('input', { type: 'radio', name: 'master', value: m.id, ...(settings.masterId === m.id ? { checked: 'checked' } : {}) }),
-        '👑 마스터',
+        t('model.master'),
       ]),
-      h('label', { class: 'master-radio', title: '이 모델이 이미지(비전) 입력을 지원하면 체크하세요. 끄면 이미지를 보내지 않습니다.' }, [
+      h('label', { class: 'master-radio', title: t('model.vision_title') }, [
         h('input', { type: 'checkbox', 'data-id': m.id, 'data-k': 'vision', ...(m.vision ? { checked: 'checked' } : {}) }),
-        '비전',
+        t('model.vision'),
       ]),
       h('label', { class: 'master-radio' }, [
         h('input', { type: 'checkbox', 'data-id': m.id, 'data-k': 'enabled', ...(m.enabled ? { checked: 'checked' } : {}) }),
-        '사용',
+        t('model.use'),
       ]),
       isLocal ? h('button', {
-        class: 'icon-btn remove-local', title: '삭제',
+        class: 'icon-btn remove-local', title: t('model.remove'),
         onclick: () => removeLocal(m.id),
       }, '🗑') : null,
     ]),
     h('div', { class: 'model-grid' }, [
       h('div', { class: 'field' }, [
-        h('label', { text: '표시 이름' }),
+        h('label', { text: t('model.display_name') }),
         h('input', { value: m.label, 'data-id': m.id, 'data-k': 'label' }),
       ]),
       h('div', { class: 'field' }, [
-        h('label', { text: '모델 이름' }),
+        h('label', { text: t('model.model_name') }),
         h('input', {
           value: m.model,
           list: listId,
@@ -3558,7 +3721,7 @@ function modelSettingRow(m) {
 }
 
 function presetPlaceholder(type) {
-  return (MODEL_PRESETS[type] || []).length ? '목록에서 선택하거나 직접 입력' : '모델 이름 직접 입력';
+  return (MODEL_PRESETS[type] || []).length ? t('model.pick_or_type') : t('model.type_name');
 }
 
 function modelPresetDatalist(type, id) {
@@ -3567,7 +3730,7 @@ function modelPresetDatalist(type, id) {
   for (const p of presets) {
     list.appendChild(h('option', {
       value: p.model,
-      label: `${p.label} · 입력 $${p.priceIn}/1M · 출력 $${p.priceOut}/1M`,
+      label: t('model.price_opt', { label: p.label, in: p.priceIn, out: p.priceOut }),
     }));
   }
   return list;
@@ -3598,14 +3761,14 @@ function priceFields(m) {
   const p = effectivePrice(m) || { in: '', out: '' };
   return h('div', { class: 'field full price-field' }, [
     h('label', {}, [
-      '예상 단가 (USD / 100만 토큰) ',
-      h('span', { class: 'help-q', 'data-tip': '월 예상 금액은 각 답변의 추정 토큰 수 × 이 단가로 계산됩니다. 기본값은 공개 가격표 기준이며, 본인 요금제에 맞게 직접 수정할 수 있습니다. (토큰 수도 글자 길이 기반 추정치라 실제 청구액과 다를 수 있어요.)' }, '?'),
+      t('model.price_label'),
+      h('span', { class: 'help-q', 'data-tip': t('model.price_tip') }, '?'),
     ]),
     h('div', { class: 'price-row' }, [
-      h('span', { class: 'price-cap' }, '입력'),
-      h('input', { type: 'number', step: '0.01', min: '0', class: 'price-in', value: p.in ?? '', placeholder: '입력', 'data-id': m.id, 'data-k': 'priceIn' }),
-      h('span', { class: 'price-cap' }, '출력'),
-      h('input', { type: 'number', step: '0.01', min: '0', class: 'price-out', value: p.out ?? '', placeholder: '출력', 'data-id': m.id, 'data-k': 'priceOut' }),
+      h('span', { class: 'price-cap' }, t('model.price_in')),
+      h('input', { type: 'number', step: '0.01', min: '0', class: 'price-in', value: p.in ?? '', placeholder: t('model.price_in'), 'data-id': m.id, 'data-k': 'priceIn' }),
+      h('span', { class: 'price-cap' }, t('model.price_out')),
+      h('input', { type: 'number', step: '0.01', min: '0', class: 'price-out', value: p.out ?? '', placeholder: t('model.price_out'), 'data-id': m.id, 'data-k': 'priceOut' }),
     ]),
   ]);
 }
@@ -3633,7 +3796,7 @@ function updateAddLocalState() {
   const atMax = localCount(settings) >= MAX_LOCAL;
   btn.disabled = atMax;
   btn.style.opacity = atMax ? 0.4 : 1;
-  btn.textContent = atMax ? `로컬 최대 ${MAX_LOCAL}개` : '+ 로컬 엔드포인트 추가';
+  btn.textContent = atMax ? t('local.max', { n: MAX_LOCAL }) : t('local.add');
 }
 
 function readModelForm() {
@@ -3684,18 +3847,13 @@ function saveSettingsFromForm() {
   renderChips();
   renderUsage();
   renderMessages();
-  $('#saveHint').textContent = '저장됨 ✓';
+  $('#saveHint').textContent = t('savehint.saved');
   setTimeout(closeSettings, 350);
 }
 
 async function resetEverything() {
-  const who = session ? `'${session.displayName}'` : '현재 사용자';
-  const ok = confirm(
-    `${who} 데이터를 정말 초기화할까요?\n\n` +
-    '· 저장된 API 키와 설정\n' +
-    '· 모든 채팅 기록\n\n' +
-    '영구 삭제되며 되돌릴 수 없습니다. (계정은 유지됩니다)'
-  );
+  const who = session ? `'${session.displayName}'` : t('reset.current_user');
+  const ok = confirm(t('confirm.reset_all', { who }));
   if (!ok) return;
 
   if (activeController) activeController.abort();
@@ -3731,19 +3889,14 @@ async function resetEverything() {
   if (maxTokInput) maxTokInput.value = settings.maxTokens || 8192;
   renderModelSettings();
   refreshStorageInfo();
-  $('#saveHint').textContent = '초기화 완료 ✓';
+  $('#saveHint').textContent = t('savehint.reset_done');
   if (session.mode === 'online') scheduleSync();
   setTimeout(closeSettings, 600);
 }
 
 async function resetChatsOnly() {
-  const who = session ? `'${session.displayName}'` : '현재 사용자';
-  const ok = confirm(
-    `${who}의 대화내용만 모두 삭제할까요?\n\n` +
-    '· 채팅방과 질문/답변 기록 삭제\n' +
-    '· API 키, 모델 설정, 개인 맞춤, 사용량은 유지\n\n' +
-    '되돌릴 수 없습니다.'
-  );
+  const who = session ? `'${session.displayName}'` : t('reset.current_user');
+  const ok = confirm(t('confirm.reset_chats', { who }));
   if (!ok) return;
 
   if (activeController) activeController.abort();
@@ -3755,21 +3908,17 @@ async function resetChatsOnly() {
   renderChatList();
   renderMessages();
   refreshStorageInfo();
-  $('#saveHint').textContent = '대화내용 초기화 완료 ✓';
+  $('#saveHint').textContent = t('savehint.reset_chats_done');
   if (session.mode === 'online') scheduleSync();
 }
 
 async function deleteCurrentAccount() {
   if (session && session.mode === 'online') {
-    alert('온라인 계정 삭제는 아직 서버 API가 없어 지원하지 않습니다.\n이 기기의 데이터만 지우려면 "내 데이터 초기화"를 사용하세요.');
+    alert(t('alert.online_delete_unsupported'));
     return;
   }
   const who = session ? `'${session.displayName}'` : '';
-  const ok = confirm(
-    `계정 ${who} 을(를) 완전히 삭제할까요?\n\n` +
-    '이 계정의 모든 채팅 기록 · 설정 · API 키가 삭제되고\n' +
-    '로그인 화면으로 돌아갑니다. 되돌릴 수 없습니다.'
-  );
+  const ok = confirm(t('confirm.delete_account', { who }));
   if (!ok) return;
 
   if (activeController) activeController.abort();
@@ -3798,7 +3947,7 @@ function setupPwModal() {
 }
 function openPwModal() {
   if (session && session.mode === 'online' && !session.token) {
-    alert('오프라인 상태에서는 비밀번호를 변경할 수 없습니다.\n네트워크에 연결한 뒤 다시 시도해주세요.');
+    alert(t('alert.offline_no_pw'));
     return;
   }
   $('#pwCurrent').value = '';
@@ -3816,13 +3965,13 @@ async function submitPwChange() {
   const nw = $('#pwNew').value;
   const nw2 = $('#pwNew2').value;
   showPwError('');
-  if (!cur || !nw) { showPwError('모든 칸을 채워주세요.'); return; }
-  if (nw !== nw2) { showPwError('새 비밀번호가 일치하지 않습니다.'); return; }
+  if (!cur || !nw) { showPwError(t('pw.fill_all')); return; }
+  if (nw !== nw2) { showPwError(t('pw.new_mismatch')); return; }
 
   const btn = $('#pwSubmitBtn');
   btn.disabled = true;
   const prev = btn.textContent;
-  btn.textContent = '변경 중…';
+  btn.textContent = t('pw.changing');
   try {
     if (session.mode === 'online') await changeOnlinePassword(cur, nw);
     else await changeLocalPassword(cur, nw);
@@ -3831,8 +3980,8 @@ async function submitPwChange() {
     clearAutoLoginSession();
     closePwModal();
     $('#saveHint').textContent = session.mode === 'online'
-      ? '비밀번호 변경 완료 ✓ (다른 기기는 새 비밀번호로 다시 로그인해야 합니다)'
-      : '비밀번호 변경 완료 ✓';
+      ? t('savehint.pw_done_sync')
+      : t('savehint.pw_done');
   } catch (err) {
     showPwError(String(err.message || err));
   } finally {
@@ -3861,15 +4010,15 @@ async function changeLocalPassword(cur, nw) {
 //   5) re-push the whole re-encrypted dataset to overwrite the server
 async function changeOnlinePassword(cur, nw) {
   if (!isOnlineSession()) {
-    throw new Error('오프라인 상태에서는 비밀번호를 변경할 수 없습니다. 네트워크 연결 후 다시 시도해주세요.');
+    throw new Error(t('pwerr.offline'));
   }
 
   // 1) ensure nothing is left unsent and we have everything locally
   try {
     await runSync(session);
   } catch (e) {
-    if (e && e.status === 401) { clearAutoLoginSession(); forceLogout('세션이 만료되었습니다. 다시 로그인해주세요.'); return; }
-    throw new Error('동기화에 실패해 비밀번호를 바꾸지 못했습니다. 네트워크를 확인하고 다시 시도해주세요.');
+    if (e && e.status === 401) { clearAutoLoginSession(); forceLogout(t('err.session_expired')); return; }
+    throw new Error(t('pwerr.sync_fail'));
   }
 
   // 2) verify current password + derive the new keys
@@ -3896,7 +4045,7 @@ async function changeOnlinePassword(cur, nw) {
     kdfIterations: iterations,
     authToken: newAuthToken,
   });
-  if (!session) throw new Error('세션이 종료되어 비밀번호 변경을 완료하지 못했습니다. 새 비밀번호로 다시 로그인해주세요.');
+  if (!session) throw new Error(t('pwerr.session_ended'));
   session.key = newKey;
   session.authToken = newAuthToken;
   session.kdfSalt = newKdfSalt;
@@ -3916,15 +4065,15 @@ async function changeOnlinePassword(cur, nw) {
 function getBackupExportPassword() {
   const pass = $('#backupPass').value;
   const pass2 = $('#backupPass2').value;
-  if (!pass) throw new Error('백업 암호를 입력해주세요.');
-  if (pass.length < 8) throw new Error('백업 암호는 8자 이상이어야 합니다.');
-  if (pass !== pass2) throw new Error('백업 암호 확인이 일치하지 않습니다.');
+  if (!pass) throw new Error(t('backup.enter_pass'));
+  if (pass.length < 8) throw new Error(t('backup.pass_min'));
+  if (pass !== pass2) throw new Error(t('backup.pass_mismatch'));
   return pass;
 }
 
 function getBackupImportPassword() {
   const pass = $('#backupImportPass').value;
-  if (!pass) throw new Error('백업 암호를 입력해주세요.');
+  if (!pass) throw new Error(t('backup.enter_pass'));
   return pass;
 }
 
@@ -3987,9 +4136,9 @@ async function exportBackup() {
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     clearBackupPasswords();
-    $('#saveHint').textContent = `백업 내보냄 (${chatsData.length}개 채팅) ✓`;
+    $('#saveHint').textContent = t('savehint.backup_exported', { n: chatsData.length });
   } catch (err) {
-    alert('백업 내보내기 실패: ' + String(err.message || err));
+    alert(t('alert.backup_export_fail', { err: String(err.message || err) }));
   }
 }
 
@@ -4001,7 +4150,7 @@ async function importBackup(e) {
     const text = await file.text();
     const parsed = JSON.parse(text);
     if (parsed.app !== 'apitizer' || parsed.kind !== 'backup' || !parsed.data) {
-      throw new Error('올바른 API-Tizer 백업 파일이 아닙니다.');
+      throw new Error(t('backup.bad_file'));
     }
     let payload;
     if (parsed.kdf?.salt) {
@@ -4009,13 +4158,13 @@ async function importBackup(e) {
       try {
         payload = await decryptJSON(backupKey, parsed.data);
       } catch {
-        throw new Error('백업 암호가 올바르지 않습니다.');
+        throw new Error(t('backup.pass_wrong'));
       }
     } else {
       try {
         payload = await decryptJSON(session.key, parsed.data);
       } catch {
-        throw new Error('이전 형식 백업입니다. 만든 브라우저의 같은 계정에서만 가져올 수 있습니다. 새 백업으로 다시 내보내 주세요.');
+        throw new Error(t('backup.old_format'));
       }
     }
     // Prefer the full settings snapshot (newer backups); fall back to the
@@ -4030,7 +4179,7 @@ async function importBackup(e) {
     // 1) Restore chats (only ask if the backup actually has any).
     let n = 0;
     if (chatCount) {
-      if (confirm(`백업의 채팅 ${chatCount}개를 현재 계정에 추가할까요? (기존 기록은 유지됩니다)`)) {
+      if (confirm(t('confirm.import_chats', { n: chatCount }))) {
         n = await importUserData(session.id, session.key, payload.chats);
       }
     }
@@ -4038,7 +4187,7 @@ async function importBackup(e) {
     // 2) Restore full settings (API keys, models+단가, 개인 맞춤, 토글, 사용량).
     let settingsRestored = false;
     if (hasSettings) {
-      if (confirm('백업의 API 키 · 모델/단가 · 개인 맞춤 · 사용량 등 설정을 적용할까요? (현재 설정을 덮어씁니다)')) {
+      if (confirm(t('confirm.import_settings'))) {
         const next = { ...settings };
         if (snap) {
           // copy every known setting field that's present
@@ -4071,11 +4220,11 @@ async function importBackup(e) {
     if (timeoutInput) timeoutInput.value = Math.round((settings.timeoutMs || 60000) / 1000);
     if (session.mode === 'online' && (n || settingsRestored)) scheduleSync();
     const parts = [];
-    if (n) parts.push(`채팅 ${n}개`);
-    if (settingsRestored) parts.push('설정·API 키');
+    if (n) parts.push(t('backup.parts_chats', { n }));
+    if (settingsRestored) parts.push(t('backup.parts_settings'));
     clearBackupPasswords();
-    $('#saveHint').textContent = parts.length ? `백업 가져옴 (${parts.join(' · ')}) ✓` : '가져온 항목이 없습니다.';
+    $('#saveHint').textContent = parts.length ? t('savehint.backup_imported', { parts: parts.join(' · ') }) : t('savehint.backup_nothing');
   } catch (err) {
-    alert('백업 가져오기 실패: ' + String(err.message || err));
+    alert(t('alert.backup_import_fail', { err: String(err.message || err) }));
   }
 }

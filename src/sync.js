@@ -13,6 +13,7 @@
 
 import { encryptJSON, decryptJSON } from './crypto.js';
 import * as db from './db.js';
+import { t } from './i18n.js';
 
 // --- Payload crypto (thin, explicit names for the sync boundary) -----------
 // A "payload" is any JSON value (API keys, settings, a chat turn). It is sealed
@@ -46,7 +47,7 @@ export function isConfigured() {
 // --- Low-level REST helper --------------------------------------------------
 async function api(path, { method = 'GET', token, body, signal } = {}) {
   const base = getEndpoint();
-  if (!base) throw new Error('동기화 서버 주소가 설정되지 않았습니다.');
+  if (!base) throw new Error(t('ext.sync_no_server'));
   const headers = { Accept: 'application/json' };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (token) headers.Authorization = `Bearer ${token}`;
@@ -58,13 +59,13 @@ async function api(path, { method = 'GET', token, body, signal } = {}) {
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch {
-    throw new Error('동기화 서버에 연결할 수 없습니다. 네트워크를 확인하세요.');
+    throw new Error(t('ext.sync_no_connect'));
   }
 
   let data = null;
   try { data = await res.json(); } catch { /* non-JSON / empty */ }
   if (!res.ok) {
-    const msg = (data && data.error) || `서버 오류 (${res.status})`;
+    const msg = (data && data.error) || t('ext.sync_server_error', { status: res.status });
     const err = new Error(msg);
     err.status = res.status;
     throw err;
@@ -111,8 +112,8 @@ let inFlight = null;
 // Push local changes, then pull remote changes since last_sync_timestamp.
 // `session` = { id, token }. Returns { pushed, pulled }.
 export async function runSync(session) {
-  if (!session || !session.token) throw new Error('로그인 세션이 없습니다.');
-  if (!isConfigured()) throw new Error('동기화 서버 주소가 설정되지 않았습니다.');
+  if (!session || !session.token) throw new Error(t('ext.sync_no_session'));
+  if (!isConfigured()) throw new Error(t('ext.sync_no_server'));
   // Coalesce concurrent triggers (e.g. several quick edits) into one run.
   if (inFlight) return inFlight;
   inFlight = (async () => {

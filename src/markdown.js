@@ -1,6 +1,7 @@
 // Minimal, dependency-free, XSS-safe markdown -> HTML renderer.
 // All raw text is HTML-escaped FIRST, then a limited set of markdown
 // constructs are applied. No raw HTML from the model is ever injected.
+import { t } from './i18n.js';
 
 function escapeHtml(s) {
   return s
@@ -118,7 +119,7 @@ export function renderMarkdown(src) {
       const copyData = encodeURIComponent(rawCode);
       html += `<div class="code-block"><div class="code-bar">` +
         `<span class="code-lang">${langLabel}</span>` +
-        `<button type="button" class="code-copy" data-code="${copyData}" title="코드 복사">복사</button>` +
+        `<button type="button" class="code-copy" data-code="${copyData}" title="${t('ext.copy_code_title')}">${t('ext.copy')}</button>` +
         `</div><pre><code>${highlighted}</code></pre></div>`;
       continue;
     }
