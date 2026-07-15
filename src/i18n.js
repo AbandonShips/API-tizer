@@ -9,7 +9,7 @@
 //  Usage:
 //    import { t, getLang, setLang, applyI18n, onLangChange } from './i18n.js';
 //    t('auth.login')                     → localised string
-//    t('err.file_too_big', { name, size })  → with {var} interpolation
+//    t('file.too_big', { name, size })   → with {var} interpolation
 //    applyI18n(root)                     → localise [data-i18n*] elements
 // =====================================================================
 
@@ -390,6 +390,7 @@ const S = {
     'chat.assign_folder': '폴더 지정',
     'chat.rename': '이름 변경',
     'chat.delete': '삭제',
+    'chat.more': '더보기',
     'chat.default_title': '새 채팅',
     'chat.attach_title': '첨부 파일',
     'chat.untitled_export': '대화',
@@ -592,8 +593,6 @@ const S = {
       '결정된 사항, 사용자의 선호·전제·제약, 중요한 고유명사·수치·용어 정의, 아직 해결되지 않은 질문을 반드시 보존하세요. ' +
       '잡담과 중복은 지우고, 이후 어떤 모델이든 이 요약만 보고 맥락을 자연스럽게 이어갈 수 있도록 ' +
       '구조화된 마크다운(제목·불릿)으로 간결하게 작성하세요. 새로운 내용을 지어내지 마세요.',
-    'instr.minority_header': '소수 의견',
-    'instr.minority_none': '특이한 소수 의견 없음',
   },
 
   en: {
@@ -878,7 +877,7 @@ const S = {
     'pdf.no_text': '(No text was extracted from the PDF — it may be a scanned-image PDF.)',
     'attach.pdf_reading': 'Reading PDF…',
     'attach.remove': 'Remove',
-    'attach.no_vision': '⚠ {models} is set to no-vision and will not receive images. (Check Vision in Settings.)',
+    'attach.no_vision': "⚠ Images won't be sent to {models} (Vision is off). Enable Vision in Settings.",
 
     // ---- payload / history block labels (sent to models) ----
     'payload.attach_img_stub': '[Previous attached image: {name} — referenced earlier]',
@@ -915,6 +914,7 @@ const S = {
     'chat.assign_folder': 'Assign folder',
     'chat.rename': 'Rename',
     'chat.delete': 'Delete',
+    'chat.more': 'More',
     'chat.default_title': 'New chat',
     'chat.attach_title': 'Attachment',
     'chat.untitled_export': 'Conversation',
@@ -994,7 +994,7 @@ const S = {
     'compaction.card_sub': 'The chat content stays intact. Later questions send only this summary + recent messages (to save tokens).',
     'compaction.view': 'View summary',
     'compaction.prompt_title': '🗜 This conversation is getting long',
-    'compaction.prompt_p': 'This conversation has grown, so the prior context sent with each question is now about {k}K tokens. That raises tokens (cost) accordingly.',
+    'compaction.prompt_p': 'This conversation has grown, so the prior context sent with each question is now about {k}K tokens. That increases token usage (cost) accordingly.',
     'compaction.prompt_muted': 'For a completely new topic, "+ New chat" saves the most. To keep this context, you can compress the earlier part into a single summary. Your existing chat stays on screen with one summary card added, and later questions send only (summary + recent messages).',
     'compaction.just_continue': 'Just continue',
     'compaction.do_summarize': 'Summarize earlier chat',
@@ -1112,7 +1112,5 @@ const S = {
       'You are a summarizer that compresses a long conversation, keeping only what later turns need. ' +
       "Always preserve decisions made, the user's preferences/premises/constraints, important proper nouns/numbers/term definitions, and still-unresolved questions. " +
       'Remove chit-chat and redundancy, and write concisely in structured Markdown (headings, bullets) so that any model can continue the context naturally from this summary alone. Do not invent new content.',
-    'instr.minority_header': 'Minority opinion',
-    'instr.minority_none': 'No notable minority opinion',
   },
 };

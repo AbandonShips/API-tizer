@@ -1372,6 +1372,9 @@ function chatItem(c) {
       h('span', { class: 'del', title: t('chat.delete'),
         onclick: async (e) => { e.stopPropagation(); await removeChat(c.id); } }, '🗑'),
     ]),
+    // Mobile-only ⋮ trigger; opens the consolidated action menu (see CSS: hidden on desktop).
+    h('span', { class: 'kebab', title: t('chat.more'),
+      onclick: (e) => { e.stopPropagation(); openChatActionMenu(c, item, e.currentTarget); } }, '⋮'),
   ]);
   return item;
 }
@@ -1438,23 +1441,23 @@ function makeDropZone(el, folderName) {
   });
 }
 
-let folderMenuEl = null;
-function closeFolderMenu() {
-  if (folderMenuEl) { folderMenuEl.remove(); folderMenuEl = null; }
-  document.removeEventListener('mousedown', onFolderMenuOutside, true);
-  document.removeEventListener('keydown', onFolderMenuKey, true);
+let popupMenuEl = null;
+function closePopupMenu() {
+  if (popupMenuEl) { popupMenuEl.remove(); popupMenuEl = null; }
+  document.removeEventListener('mousedown', onPopupMenuOutside, true);
+  document.removeEventListener('keydown', onPopupMenuKey, true);
 }
-function onFolderMenuOutside(e) {
-  if (folderMenuEl && !folderMenuEl.contains(e.target)) closeFolderMenu();
+function onPopupMenuOutside(e) {
+  if (popupMenuEl && !popupMenuEl.contains(e.target)) closePopupMenu();
 }
-function onFolderMenuKey(e) {
-  if (e.key === 'Escape') { e.preventDefault(); closeFolderMenu(); }
+function onPopupMenuKey(e) {
+  if (e.key === 'Escape') { e.preventDefault(); closePopupMenu(); }
 }
 
 // Popup menu on the 📁 button: pick an existing folder, remove from folder,
 // or create a new one. Replaces the old raw text-only prompt.
 function openFolderMenu(c, anchor) {
-  closeFolderMenu();
+  closePopupMenu();
   const existing = [...new Set(chats.map((x) => (x.folder || '').trim()).filter(Boolean))]
     .sort((a, b) => a.localeCompare(b));
 
@@ -1468,7 +1471,7 @@ function openFolderMenu(c, anchor) {
       const isCurrent = (c.folder || '') === name;
       listWrap.appendChild(h('button', {
         class: 'folder-menu-item' + (isCurrent ? ' current' : ''), type: 'button',
-        onclick: () => { closeFolderMenu(); moveChatToFolder(c.id, name); },
+        onclick: () => { closePopupMenu(); moveChatToFolder(c.id, name); },
       }, [
         h('span', { class: 'fm-ic', text: '📁' }),
         h('span', { class: 'fm-label', title: name, text: name }),
@@ -1483,7 +1486,7 @@ function openFolderMenu(c, anchor) {
   if (c.folder) {
     menu.appendChild(h('button', {
       class: 'folder-menu-item danger', type: 'button',
-      onclick: () => { closeFolderMenu(); moveChatToFolder(c.id, ''); },
+      onclick: () => { closePopupMenu(); moveChatToFolder(c.id, ''); },
     }, [
       h('span', { class: 'fm-ic', text: '↩' }),
       h('span', { class: 'fm-label', text: t('folder.remove_from') }),
@@ -1495,12 +1498,12 @@ function openFolderMenu(c, anchor) {
   const inputRow = h('div', { class: 'folder-menu-inputrow' }, [input]);
   const commitNew = () => {
     const v = input.value.trim().slice(0, 30);
-    closeFolderMenu();
+    closePopupMenu();
     if (v) moveChatToFolder(c.id, v);
   };
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); commitNew(); }
-    else if (e.key === 'Escape') { e.preventDefault(); closeFolderMenu(); }
+    else if (e.key === 'Escape') { e.preventDefault(); closePopupMenu(); }
   });
   const newRow = h('button', {
     class: 'folder-menu-item new', type: 'button',
@@ -1511,8 +1514,14 @@ function openFolderMenu(c, anchor) {
   ]);
   menu.appendChild(newRow);
 
+  showPopupMenu(menu, anchor);
+}
+
+// Append a popup menu to the body, position it under `anchor` (clamped to the
+// viewport), and wire outside-click / Esc dismissal. Shared by the folder picker
+// and the mobile ⋮ chat-action menu (only one popup is open at a time).
+function showPopupMenu(menu, anchor) {
   document.body.appendChild(menu);
-  // Position under the anchor, clamped inside the viewport.
   const r = anchor.getBoundingClientRect();
   const mw = menu.offsetWidth, mh = menu.offsetHeight;
   let left = r.left;
@@ -1521,12 +1530,36 @@ function openFolderMenu(c, anchor) {
   if (top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 4);
   menu.style.left = Math.max(8, left) + 'px';
   menu.style.top = top + 'px';
-
-  folderMenuEl = menu;
+  popupMenuEl = menu;
   setTimeout(() => {
-    document.addEventListener('mousedown', onFolderMenuOutside, true);
-    document.addEventListener('keydown', onFolderMenuKey, true);
+    document.addEventListener('mousedown', onPopupMenuOutside, true);
+    document.addEventListener('keydown', onPopupMenuKey, true);
   }, 0);
+}
+
+// Mobile: a single ⋮ button per chat opens this action menu (pin / rename / move /
+// delete) instead of cramming four always-on icons into every row. On desktop the
+// same actions live as hover icons + drag-and-drop, so the ⋮ button is hidden there.
+function openChatActionMenu(c, item, anchor) {
+  closePopupMenu();
+  const menu = h('div', { class: 'folder-menu' });
+  menu.addEventListener('click', (e) => e.stopPropagation());
+  menu.appendChild(h('div', { class: 'chat-menu-name', title: c.title, text: c.title }));
+
+  const mkItem = (cls, icon, label, act) => h('button', {
+    class: 'folder-menu-item' + (cls ? ' ' + cls : ''), type: 'button',
+    onclick: () => { closePopupMenu(); act(); },
+  }, [
+    h('span', { class: 'fm-ic', text: icon }),
+    h('span', { class: 'fm-label', text: label }),
+  ]);
+
+  menu.appendChild(mkItem('', c.pinned ? '📍' : '📌', c.pinned ? t('chat.unpin') : t('chat.pin'), () => togglePin(c)));
+  menu.appendChild(mkItem('', '✎', t('chat.rename'), () => beginRename(c, item)));
+  menu.appendChild(mkItem('', '📁', t('chat.assign_folder'), () => openFolderMenu(c, anchor)));
+  menu.appendChild(mkItem('danger', '🗑', t('chat.delete'), () => { removeChat(c.id); }));
+
+  showPopupMenu(menu, anchor);
 }
 
 function beginRename(c, item) {

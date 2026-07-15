@@ -1,6 +1,6 @@
 # ![API-tizer 로고](./favicon.png) API-Tizer
 
-**현재 버전: v1.4.0**
+**현재 버전: v1.4.1**
 
 ChatGPT · Claude · Gemini · Grok · 로컬 OpenAI 호환 모델을 한 화면에서 동시에 호출하고 비교하는 개인용 멀티 AI 콘솔입니다.
 
@@ -13,15 +13,15 @@ ChatGPT · Claude · Gemini · Grok · 로컬 OpenAI 호환 모델을 한 화면
 - 토큰 절약형 히스토리 관리 — 최근 대화는 원문, 오래된 대화는 공식 종합만, 첨부(이미지·PDF)는 최근 것만 재전송
 - 이미지 · 텍스트 · PDF 첨부
 - 웹 검색 지원 모델의 출처 표시, 본문 URL 자동 링크화, 이미지 링크 미리보기
-- 설정의 "풍부한 응답 서식" (기본 ON)으로 API 호출 시에도 이모지·표·구조화된 답변 유도 (웹 ChatGPT 느낌에 가깝게)
+- 설정의 "풍부한 응답 서식" (기본 ON)으로 API 호출 시에도 이모지·표·구조화된 답변 유도
 - 채팅별 📝 전용 프롬프트 지원 — 채팅 제목 옆 📝 버튼으로 특정 채팅에서만 적용되는 시스템 프롬프트 설정 가능 (설정 시 전역 취향 프롬프트를 대체, 플랫폼 기본 연속성 지시는 유지)
-- 채팅 전용 프롬프트 설정 시 풍부한 응답 서식(이모지·표·구조화) on/off를 독립적으로 제어 가능 (새 채팅 직후에도 설정 가능)
-- 모델 응답 및 마스터 요약 타임아웃(기본 60초, 설정에서 초 단위로 조정 가능) + 진행 중 완료된 모델만 선택해 즉시 요약 실행 지원
+- 채팅 전용 프롬프트 설정 시 풍부한 응답 서식(이모지·표·구조화) on/off를 독립적으로 제어 가능
+- 모델 응답 및 마스터 요약 타임아웃 + 진행 중 완료된 모델만 선택해 즉시 요약 실행 지원
 - 최대 응답 토큰 설정(기본 8192) — Claude처럼 상한이 필수인 모델의 긴 요약·답변이 잘리지 않도록 조정 가능
-- 모델별 토큰/비용 추정치 누적 (에러·타임아웃·부분 응답 시에도 정확히 카운트) 및 접이식 비용 패널
+- 모델별 토큰/비용 추정치 누적 및 접이식 비용 패널
 - 주요 제공자 모델 프리셋과 단가 자동 입력
 - 로컬 암호화 저장 또는 Cloudflare Worker 기반 온라인 동기화
-- **한국어 / English UI** — 로그인 화면 또는 설정에서 전환 (AI에게 보내는 지시문 언어도 함께 전환)
+- **한국어 / English UI** — 로그인 화면 또는 설정에서 전환
 - PC/모바일 레이아웃 자동 전환 및 수동 고정
 
 ---
@@ -39,24 +39,30 @@ ChatGPT · Claude · Gemini · Grok · 로컬 OpenAI 호환 모델을 한 화면
 - Token‑saving history — recent turns verbatim, older turns as the official synthesis only, and attachments (images/PDFs) re‑sent only for the most recent turns
 - Image · text · PDF attachments
 - Sources for web‑search‑capable models, automatic in‑text URL linkification, and image‑link previews
-- "Rich formatting" (on by default) yields emoji/tables/structured answers even on API calls (closer to the web ChatGPT feel)
+- "Rich formatting" (on by default) yields emoji/tables/structured answers even on API calls
 - Per‑chat 📝 dedicated prompt — a system prompt applied only to a specific chat (replaces the global taste prompt; the platform continuity instruction is kept), with independent rich‑formatting on/off per chat
-- Model‑response & master‑summary timeout (default 60s, adjustable) + summarize immediately using only the finished models
-- Max response tokens (default 8192) — adjustable so long summaries/answers aren't truncated on models like Claude that require a cap
-- Per‑model token/cost estimates accumulated (counted accurately even on errors/timeouts/partials) with a collapsible cost panel
+- Model‑response & master‑summary timeout + summarize immediately using only the finished models
+- Max response tokens — adjustable so long summaries/answers aren't truncated on models like Claude that require a cap
+- Per‑model token/cost estimates accumulated with a collapsible cost panel
 - Presets and pricing for major providers auto‑filled
 - Local encrypted storage or Cloudflare Worker‑based online sync
-- **한국어 / English UI** — switch on the login screen or in Settings (this also switches the language of the instructions sent to the AI)
+- **한국어 / English UI** — switch on the login screen or in Settings
 - Automatic PC/mobile layout switching with manual override
 
 ---
 
 ## 변경 사항
 
+### v1.4.1
+
+- **모바일 채팅 목록을 정리**했습니다. 이전에는 각 채팅 옆에 핀·폴더·이름변경·삭제 아이콘이 항상 떠 있어 좀은 화면에서 복잡하고 어느 채팅이 고정됐는지 구분하기 어려웠습니다. 이제 모바일에서는 채팅마다 **⋮ 버튼 하나**만 두고, 누르면 고정·이름 변경·폴더 이동·삭제 메뉴가 뜹니다. 고정된 채팅은 상단 “📌 고정됨” 그룹으로 이미 드러나고, PC에서는 기존처럼 마우스를 올리면 아이콘이 떠고 드래그로 폴더 이동도 됩니다.
+- 설정의 **언어 선택 상자가 버튼 크기에 맞게** 줄어들도록 고쳌습니다(이전에는 오른쪽으로 빈 공간이 과하게 남았습니다).
+- **English 번역을 다듬고**(어색하거나 직역 티가 나던 문구 정리) 미사용 문자열·중복을 정리해 코드를 가볍게 했습니다.
+
 ### v1.4.0
 
 - **한국어 / English 다국어 지원**을 추가했습니다. 로그인 화면 하단과 설정의 “언어(Language)”에서 전환할 수 있고, 선택은 이 기기에 저장됩니다(로그인 전에도 동작). 앱 화면 전체는 물론 **AI에게 보내는 지시문 언어까지 함께 바뀌어**, English를 고르면 답변도 영어로 나오고 마스터 요약의 소수 의견 섹션도 영어(`### Minority opinion`)로 표기됩니다. 일치/이견 배지 판단은 두 언어를 모두 인식하므로 과거 대화도 올바르게 표시됩니다. 처음 방문 시 브라우저 언어를 감지해 기본값을 정합니다.
-- **채팅 폴더 정리 기능을 대폭 개선**했습니다. 이제 사이드바에서 채팅 제목을 **드래그해 폴더로 이동**할 수 있고(PC), 폴더 헤더를 눌러 **접기/펼치기**(채팅 개수 표시)가 되며, 📁 버튼을 누르면 **기존 폴더 목록에서 선택**하거나 새 폴더를 만드는 메뉴가 뜽니다. 드래그는 가운데 제목에서만 시작돼 핀·이름변경·삭제 버튼 클릭과 겹치지 않습니다. 폴더 접힘 상태는 암호화되어 저장·동기화됩니다.
+- **채팅 폴더 정리 기능을 대폭 개선**했습니다. 이제 사이드바에서 채팅 제목을 **드래그해 폴더로 이동**할 수 있고(PC), 폴더 헤더를 눌러 **접기/펼치기**(채팅 개수 표시)가 되며, 📁 버튼을 누르면 **기존 폴더 목록에서 선택**하거나 새 폴더를 만드는 메뉴가 뜹니다. 드래그는 가운데 제목에서만 시작돼 핀·이름변경·삭제 버튼 클릭과 겹치지 않습니다. 폴더 접힘 상태는 암호화되어 저장·동기화됩니다.
 
 ### v1.3.2
 
