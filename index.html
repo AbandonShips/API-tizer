@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#0b0e14" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; worker-src 'self' blob: https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' https://api.openai.com https://api.anthropic.com https://generativelanguage.googleapis.com https://api.x.ai https://*.workers.dev http://localhost:* http://127.0.0.1:*; object-src 'none'; base-uri 'self'; form-action 'none'" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' https://api.openai.com https://api.anthropic.com https://generativelanguage.googleapis.com https://api.x.ai https://*.workers.dev http://localhost:* http://127.0.0.1:*; object-src 'none'; base-uri 'self'; form-action 'none'" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -36,7 +36,7 @@
         <p id="authError" class="auth-error" hidden></p>
         <label class="auth-check"><input type="checkbox" id="rememberId" /> <span data-i18n="auth.remember_id">아이디 기억</span></label>
         <label class="auth-check"><input type="checkbox" id="autoLogin" /> <span data-i18n="auth.auto_login">자동 로그인</span></label>
-        <p class="auth-check-warn" data-i18n="auth.check_warn">개인 기기에서만 사용하세요. 로그아웃하면 자동 로그인 정보가 삭제됩니다.</p>
+        <p class="auth-check-warn" data-i18n="auth.check_warn">자동 로그인은 개인 기기에서만 사용하세요.</p>
         <button id="authSubmit" class="btn btn-primary btn-block" data-i18n="auth.login">로그인</button>
         <p class="auth-switch">
           <span id="authSwitchText" data-i18n="auth.switch_to_signup">계정이 없으신가요?</span>

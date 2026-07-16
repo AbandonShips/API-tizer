@@ -1138,10 +1138,13 @@ function readAsText(file) {
 let pdfjsPromise = null;
 function loadPdfJs() {
   if (pdfjsPromise) return pdfjsPromise;
-  pdfjsPromise = import('https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.min.mjs')
+  // Self-hosted (bundled under /vendor/pdfjs) instead of a CDN, so no third-party script runs
+  // in the page context where decrypted data and the crypto key live. Resolved via import.meta.url
+  // so the paths hold under any base path (e.g. GitHub Pages' /API-tizer/ subfolder).
+  const vendor = new URL('../vendor/pdfjs/', import.meta.url);
+  pdfjsPromise = import(new URL('pdf.min.mjs', vendor).href)
     .then((mod) => {
-      mod.GlobalWorkerOptions.workerSrc =
-        'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.worker.min.mjs';
+      mod.GlobalWorkerOptions.workerSrc = new URL('pdf.worker.min.mjs', vendor).href;
       return mod;
     });
   return pdfjsPromise;
@@ -1801,7 +1804,7 @@ function masterVerdict(turn) {
   // "No meaningful dissent": the instructed sentinels ('특이한 소수 의견 없음' / 'No notable
   // minority opinion') and common paraphrases in either language.
   const noDissent =
-    /(소수\s*의견|이견|차이|다른\s*점|반대|이의|불일치)\s*(은|는|이|가|점)?\s*(거의|딜히|특별히|크게)?\s*(없|관찰되지\s*않|발견되지\s*않|나타나지\s*않|존재하지\s*않|보이지\s*않)/.test(body)
+    /(소수\s*의견|이견|차이|다른\s*점|반대|이의|불일치)\s*(은|는|이|가|점)?\s*(거의|딱히|특별히|크게)?\s*(없|관찰되지\s*않|발견되지\s*않|나타나지\s*않|존재하지\s*않|보이지\s*않)/.test(body)
     || /특이\s*(한|사항)?\s*(점|것|의견)?\s*(은|는|이|가)?\s*없/.test(body)
     || (body.length <= 12 && /^[\s·\-*]*없(음|습니다|다)?[.!]?$/.test(body))
     || /\bno\b[\s\S]{0,40}\b(minority|dissent|disagree|difference|diverg|conflict)/i.test(body)
@@ -2634,10 +2637,12 @@ function assistantTextForHistory(turn, modelId, opts = {}) {
       // the bulky own answer to bound long-conversation token growth.
       return t('hist.prev_synth_user') + '\n' + master;
     }
-    // Recent turn — hybrid: shared official synthesis + this model's own answer (keeps its voice).
+    // Recent turn — hybrid, MY OWN answer FIRST (identity anchor) then the shared official
+    // synthesis (context, explicitly not my words). Own-first ordering curbs convergence toward
+    // the consensus while still carrying the synthesis the user's next question is premised on.
     return (
-      t('hist.prev_synth_user') + '\n' + master +
-      '\n\n' + t('hist.my_answer') + '\n' + own
+      t('hist.my_answer') + '\n' + own +
+      '\n\n' + t('hist.prev_synth_user') + '\n' + master
     );
   }
   if (own) {

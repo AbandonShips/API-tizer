@@ -60,7 +60,7 @@ export default {
 
       return json({ error: 'not found' }, 404, cors);
     } catch (err) {
-      return json({ error: 'server error', detail: String(err && err.message || err) }, 500, cors);
+      return json({ code: 'server_error', error: 'server error', detail: String(err && err.message || err) }, 500, cors);
     }
   },
 };
@@ -72,7 +72,7 @@ export default {
 async function handleParams(request, env, cors) {
   const { username } = await readJson(request);
   const id = normId(username);
-  if (!id) return json({ error: '아이디가 필요합니다.' }, 400, cors);
+  if (!id) return errRes('id_required', 'A username is required.', 400, cors);
 
   const row = await env.DB.prepare(
     'SELECT kdf_salt, kdf_iterations FROM users WHERE username = ?'
@@ -85,13 +85,13 @@ async function handleParams(request, env, cors) {
 async function handleSignup(request, env, cors) {
   const body = await readJson(request);
   const id = normId(body.username);
-  if (!id || id.length < 2) return json({ error: '아이디는 2자 이상이어야 합니다.' }, 400, cors);
+  if (!id || id.length < 2) return errRes('id_min', 'Username must be at least 2 characters.', 400, cors);
   if (!body.kdf_salt || !body.kdf_iterations || !body.auth_token) {
-    return json({ error: '필수 항목이 누락되었습니다.' }, 400, cors);
+    return errRes('missing_fields', 'Required fields are missing.', 400, cors);
   }
 
   const existing = await env.DB.prepare('SELECT username FROM users WHERE username = ?').bind(id).first();
-  if (existing) return json({ error: '이미 존재하는 아이디입니다.' }, 409, cors);
+  if (existing) return errRes('id_exists', 'That username already exists.', 409, cors);
 
   const authSalt = randomB64(16);
   const authHash = await hashAuthToken(body.auth_token, authSalt);
@@ -107,16 +107,16 @@ async function handleSignup(request, env, cors) {
 async function handleLogin(request, env, cors) {
   const body = await readJson(request);
   const id = normId(body.username);
-  if (!id || !body.auth_token) return json({ error: '아이디와 인증 토큰이 필요합니다.' }, 400, cors);
+  if (!id || !body.auth_token) return errRes('id_pw_required', 'A username and auth token are required.', 400, cors);
 
   const row = await env.DB.prepare(
     'SELECT auth_salt, auth_hash FROM users WHERE username = ?'
   ).bind(id).first();
-  if (!row) return json({ error: '존재하지 않는 아이디입니다.' }, 404, cors);
+  if (!row) return errRes('id_not_found', 'That username does not exist.', 404, cors);
 
   const candidate = await hashAuthToken(body.auth_token, row.auth_salt);
   if (!timingSafeEqual(candidate, row.auth_hash)) {
-    return json({ error: '인증에 실패했습니다.' }, 401, cors);
+    return errRes('auth_failed', 'Authentication failed.', 401, cors);
   }
 
   const token = await signToken(id, env);
@@ -130,11 +130,11 @@ async function handleLogin(request, env, cors) {
 // freshly derived Key A. Returns a new token for THIS device.
 async function handleChange(request, env, cors) {
   const user = await requireAuth(request, env);
-  if (!user) return json({ error: '인증이 필요합니다.' }, 401, cors);
+  if (!user) return errRes('auth_required', 'Authentication is required.', 401, cors);
 
   const body = await readJson(request);
   if (!body.kdf_salt || !body.kdf_iterations || !body.auth_token) {
-    return json({ error: '필수 항목이 누락되었습니다.' }, 400, cors);
+    return errRes('missing_fields', 'Required fields are missing.', 400, cors);
   }
 
   const authSalt = randomB64(16);
@@ -155,7 +155,7 @@ async function handleChange(request, env, cors) {
 
 async function handlePull(request, env, url, cors) {
   const user = await requireAuth(request, env);
-  if (!user) return json({ error: '인증이 필요합니다.' }, 401, cors);
+  if (!user) return errRes('auth_required', 'Authentication is required.', 401, cors);
 
   const since = Math.max(0, Number(url.searchParams.get('since')) || 0);
   const limit = clamp(Number(url.searchParams.get('limit')) || PULL_LIMIT_DEFAULT, 1, PULL_LIMIT_MAX);
@@ -183,11 +183,11 @@ async function handlePull(request, env, url, cors) {
 
 async function handlePush(request, env, cors) {
   const user = await requireAuth(request, env);
-  if (!user) return json({ error: '인증이 필요합니다.' }, 401, cors);
+  if (!user) return errRes('auth_required', 'Authentication is required.', 401, cors);
 
   const body = await readJson(request);
   const items = Array.isArray(body.items) ? body.items : [];
-  if (items.length > 5000) return json({ error: '한 번에 보낼 수 있는 항목 수를 초과했습니다.' }, 413, cors);
+  if (items.length > 5000) return errRes('too_many_items', 'Too many items to send at once.', 413, cors);
 
   // "Last writer to reach the server wins", stamped with the server clock so
   // delta timestamps stay monotonic regardless of device clock skew.
@@ -297,6 +297,13 @@ function json(obj, status, cors) {
     status,
     headers: { 'Content-Type': 'application/json', ...cors },
   });
+}
+
+// Error response carrying a stable machine `code` (the client localises it) plus an English
+// fallback `error` string for any client that doesn't recognise the code. Keeps the Worker
+// language-agnostic so users see errors in their own UI language.
+function errRes(code, message, status, cors) {
+  return json({ code, error: message }, status, cors);
 }
 
 async function readJson(request) {

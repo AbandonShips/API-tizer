@@ -14,6 +14,15 @@ PORT = 8753
 
 
 class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
+    # Serve ES modules (.mjs — including the bundled pdf.js under vendor/) with a JS MIME
+    # type. Browsers refuse to execute a module sent as application/octet-stream, and some
+    # Python versions don't map .mjs by default, so pin it (and .js) explicitly.
+    extensions_map = {
+        **http.server.SimpleHTTPRequestHandler.extensions_map,
+        ".js": "text/javascript",
+        ".mjs": "text/javascript",
+    }
+
     def end_headers(self):
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
         self.send_header("Pragma", "no-cache")

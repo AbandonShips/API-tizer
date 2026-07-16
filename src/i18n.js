@@ -90,7 +90,7 @@ const S = {
     'auth.pass2_ph': '비밀번호 확인',
     'auth.remember_id': '아이디 기억',
     'auth.auto_login': '자동 로그인',
-    'auth.check_warn': '개인 기기에서만 사용하세요. 로그아웃하면 자동 로그인 정보가 삭제됩니다.',
+    'auth.check_warn': '자동 로그인은 개인 기기에서만 사용하세요.',
     'auth.login': '로그인',
     'auth.signup': '회원가입',
     'auth.switch_to_signup': '계정이 없으신가요?',
@@ -555,6 +555,18 @@ const S = {
     'pwerr.sync_fail': '동기화에 실패해 비밀번호를 바꾸지 못했습니다. 네트워크를 확인하고 다시 시도해주세요.',
     'pwerr.session_ended': '세션이 종료되어 비밀번호 변경을 완료하지 못했습니다. 새 비밀번호로 다시 로그인해주세요.',
 
+    // ---- sync server (Worker) errors — the Worker returns a stable `code`, localised here ----
+    'server.id_required': '아이디가 필요합니다.',
+    'server.id_min': '아이디는 2자 이상이어야 합니다.',
+    'server.missing_fields': '필수 항목이 누락되었습니다.',
+    'server.id_exists': '이미 존재하는 아이디입니다.',
+    'server.id_pw_required': '아이디와 인증 토큰이 필요합니다.',
+    'server.id_not_found': '존재하지 않는 아이디입니다.',
+    'server.auth_failed': '인증에 실패했습니다.',
+    'server.auth_required': '인증이 필요합니다.',
+    'server.too_many_items': '한 번에 보낼 수 있는 항목 수를 초과했습니다.',
+    'server.server_error': '서버 오류가 발생했습니다.',
+
     // ---- AI system instructions (sent to the models) ----
     'instr.rich':
       '모든 답변은 가독성이 높고 시각적으로 풍부한 마크다운 형식으로 작성하세요.\n' +
@@ -567,11 +579,10 @@ const S = {
     'instr.continuity':
       '당신은 API-tizer의 여러 AI 중 하나입니다. 같은 질문에 여러 모델이 답하고, 필요할 때 마스터가 공식 종합을 만듭니다.\n' +
       '이전 대화에 아래 두 블록이 함께 있을 수 있습니다.\n' +
-      '1) [이전 공식 종합] — 사용자가 읽고 이어가는 공통 기준. 후속 질문의 기본 전제로 우선하세요.\n' +
-      '2) [내가 그 턴에 제출한 개별 답] — 당신이 그때 쓴 원문. 관점·세부·이견·톤을 파악하는 참고용입니다.\n' +
-      '사용자가 공식 결론을 따르는 취지(예: 특정 옵션 선택)면 공식 종합을 우선하고, ' +
-      '이견·심화를 묻거나 유의미한 보완이 있으면 개별 답의 개성을 살려도 됩니다. ' +
-      '공식만 복창하거나 개별 소수 의견만 고집하지 마세요. 다른 모델의 원문은 주어지지 않습니다.',
+      '1) [내가 그 턴에 제출한 개별 답] — 당신이 그때 쓴 원문입니다. 이것이 당신의 관점·추론의 기준(정체성 앵커)이며, 후속 답변의 출발점으로 삼으세요.\n' +
+      '2) [이전 공식 종합] — 여러 모델의 답을 합쳐 사용자에게 보여준 공용 맥락입니다. 당신이 한 말이 아니라 그룹의 결론이며, 사용자의 다음 질문이 이 종합을 전제로 한다는 점을 이해하기 위한 참고입니다.\n' +
+      '따라서 사용자가 종합을 전제로 물으면(예: 특정 옵션 선택) 그 맥락을 반영하되, 종합의 주장을 무비판적으로 당신 것으로 흡수하지 말고 당신의 독립적 관점·이견을 유지하세요. ' +
+      '공식만 복창하지도, 근거 없이 소수 의견만 고집하지도 마세요. 다른 모델의 원문은 주어지지 않습니다.',
     'instr.master':
       '당신은 여러 AI의 답변을 종합하는 편집자입니다. 목표는 매끄러운 하나의 답이 아니라, ' +
       '여러 독립 모델의 교차 검증으로 신뢰도를 높이고 불확실성을 드러내는 것입니다. 아래 규칙을 지키세요.\n' +
@@ -614,7 +625,7 @@ const S = {
     'auth.pass2_ph': 'Confirm password',
     'auth.remember_id': 'Remember username',
     'auth.auto_login': 'Auto login',
-    'auth.check_warn': 'Use only on your personal device. Logging out clears the auto-login info.',
+    'auth.check_warn': 'Use auto login only on your personal device.',
     'auth.login': 'Log in',
     'auth.signup': 'Sign up',
     'auth.switch_to_signup': "Don't have an account?",
@@ -1079,6 +1090,18 @@ const S = {
     'pwerr.sync_fail': 'Sync failed, so the password could not be changed. Check your network and try again.',
     'pwerr.session_ended': 'The session ended before the password change completed. Please log in again with the new password.',
 
+    // ---- sync server (Worker) errors — the Worker returns a stable `code`, localised here ----
+    'server.id_required': 'A username is required.',
+    'server.id_min': 'Username must be at least 2 characters.',
+    'server.missing_fields': 'Required fields are missing.',
+    'server.id_exists': 'That username already exists.',
+    'server.id_pw_required': 'A username and auth token are required.',
+    'server.id_not_found': 'That username does not exist.',
+    'server.auth_failed': 'Authentication failed.',
+    'server.auth_required': 'Authentication is required.',
+    'server.too_many_items': 'Too many items to send at once.',
+    'server.server_error': 'A server error occurred.',
+
     // ---- AI system instructions (sent to the models) ----
     'instr.rich':
       'Write every answer in highly readable, visually rich Markdown.\n' +
@@ -1091,11 +1114,10 @@ const S = {
     'instr.continuity':
       'You are one of several AIs in API-tizer. Multiple models answer the same question, and when needed a master builds an official synthesis.\n' +
       'Earlier turns may include the two blocks below together.\n' +
-      '1) [Previous official synthesis] — the shared baseline the user reads and builds on. Prefer it as the default premise for follow-up questions.\n' +
-      '2) [My individual answer for that turn] — what you originally wrote. Use it as reference for your perspective, details, dissent, and tone.\n' +
-      'If the user is following the official conclusion (e.g., choosing a specific option), prioritize the official synthesis; ' +
-      'if they ask about dissent or go deeper, or you have a meaningful addition, you may bring out the character of your individual answer. ' +
-      "Do not merely repeat the official synthesis, nor stubbornly cling to your own minority view. You are not given other models' raw text.",
+      '1) [My individual answer for that turn] — what you originally wrote. This is the anchor for your perspective and reasoning (your identity); use it as the starting point for your follow-up.\n' +
+      "2) [Previous official synthesis] — the shared context shown to the user, merged from several models. It is NOT your own words but the group's conclusion; use it to understand that the user's next question is premised on this synthesis.\n" +
+      'So when the user builds on the synthesis (e.g., choosing a specific option), take that context into account, but do not uncritically absorb its claims as your own — keep your independent perspective and any dissent. ' +
+      "Do not merely repeat the official synthesis, nor stubbornly cling to a minority view without grounds. You are not given other models' raw text.",
     'instr.master':
       'You are an editor synthesizing the answers of several AIs. The goal is not one smooth answer but to raise reliability and surface uncertainty through cross-validation of multiple independent models. Follow these rules.\n' +
       '1) Treat what multiple models agree on as the highest-confidence core, and write a clear, sufficiently detailed final answer. Do not omit important numbers, code, proper nouns, or option definitions.\n' +

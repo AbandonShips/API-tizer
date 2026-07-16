@@ -44,6 +44,28 @@ export function isConfigured() {
   return !!getEndpoint();
 }
 
+// Map a server error `code` to a localised message. The Worker is language-agnostic: it
+// returns a stable `code` plus an English fallback `error`. Unknown codes fall back to the
+// server's text, then to a generic status message — so nothing surfaces untranslated.
+const SERVER_ERR_KEYS = {
+  id_required: 'server.id_required',
+  id_min: 'server.id_min',
+  missing_fields: 'server.missing_fields',
+  id_exists: 'server.id_exists',
+  id_pw_required: 'server.id_pw_required',
+  id_not_found: 'server.id_not_found',
+  auth_failed: 'server.auth_failed',
+  auth_required: 'server.auth_required',
+  too_many_items: 'server.too_many_items',
+  server_error: 'server.server_error',
+};
+function serverErrorMessage(data, status) {
+  const code = data && data.code;
+  if (code && SERVER_ERR_KEYS[code]) return t(SERVER_ERR_KEYS[code]);
+  if (data && data.error) return data.error;
+  return t('ext.sync_server_error', { status });
+}
+
 // --- Low-level REST helper --------------------------------------------------
 async function api(path, { method = 'GET', token, body, signal } = {}) {
   const base = getEndpoint();
@@ -65,9 +87,9 @@ async function api(path, { method = 'GET', token, body, signal } = {}) {
   let data = null;
   try { data = await res.json(); } catch { /* non-JSON / empty */ }
   if (!res.ok) {
-    const msg = (data && data.error) || t('ext.sync_server_error', { status: res.status });
-    const err = new Error(msg);
+    const err = new Error(serverErrorMessage(data, res.status));
     err.status = res.status;
+    if (data && data.code) err.code = data.code;
     throw err;
   }
   return data || {};
