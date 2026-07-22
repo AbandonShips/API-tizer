@@ -3,8 +3,9 @@ import {
   MODEL_PRESETS, modelPresetFor,
   localCount, makeLocalModel, enabledModels,
   estimateTokens, estimateCost, effectivePrice, addUsage, getUsage, resetUsage,
-  IMAGE_TOKEN_ESTIMATE,
+  IMAGE_TOKEN_ESTIMATE, checkPricingConsistency,
 } from './state.js';
+import { masterVerdict, similaritySignal } from './analysis.js';
 import {
   createChat, listChats, updateChatMeta, deleteChat,
   addTurn, updateTurn, listTurns, clearUserData, deleteAllChats, estimateUsage,
@@ -99,6 +100,15 @@ const LAYOUT_KEY = 'apitizer.layout'; // 'auto' | 'mobile' | 'desktop' (device-l
 const MOBILE_BREAKPOINT = 820;
 const NARROW_BREAKPOINT = 480;
 let layoutMode = localStorage.getItem(LAYOUT_KEY) || 'auto';
+// Self-heal a stale device-wide "desktop" override that would otherwise strand a phone.
+// The PC/Mobile toggle persists per-device, and forcing the desktop grid onto a ~390px
+// screen removes the hamburger + ⋮ action menu and squishes the two columns, so the whole
+// mobile UI reads as "broken". On a genuine phone-width viewport we drop the override and
+// fall back to auto (→ mobile). Larger tablets/laptops keep an intentional desktop force.
+if (layoutMode === 'desktop' && window.innerWidth > 0 && window.innerWidth <= NARROW_BREAKPOINT) {
+  layoutMode = 'auto';
+  localStorage.removeItem(LAYOUT_KEY);
+}
 const THEME_KEY = 'apitizer.theme'; // 'dark' | 'light' (device-level)
 let theme = localStorage.getItem(THEME_KEY) || 'dark';
 let swipeStart = null;
@@ -113,6 +123,16 @@ setupTooltips();
 setupLayoutToggle();
 setupThemeToggle();
 initAuth();
+
+// Dev-only: warn if any model preset's price drifts from the PRICING table (a
+// custom-typed model of the same name would then be priced differently). Gated to
+// localhost so deployed users never see console noise.
+if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+  try {
+    const priceIssues = checkPricingConsistency();
+    if (priceIssues.length) console.warn('[apitizer] MODEL_PRESETS \u2194 PRICING mismatch:', priceIssues);
+  } catch { /* non-fatal dev check */ }
+}
 
 function initAppEvents() {
   $('#newChatBtn').addEventListener('click', () => { newChat(); closeDrawer(); });
@@ -433,8 +453,16 @@ function setupLayoutToggle() {
     } else {
       layoutMode = 'auto';
     }
-    if (layoutMode === 'auto') localStorage.removeItem(LAYOUT_KEY);
-    else localStorage.setItem(LAYOUT_KEY, layoutMode);
+    if (layoutMode === 'auto') {
+      localStorage.removeItem(LAYOUT_KEY);
+    } else if (layoutMode === 'desktop' && window.innerWidth > 0 && window.innerWidth <= NARROW_BREAKPOINT) {
+      // On a genuine phone width, "force desktop" is almost always a slip. Apply it
+      // for this session only (don't persist), so a reload can't strand the phone in
+      // the desktop grid — complements the boot-time self-heal above.
+      localStorage.removeItem(LAYOUT_KEY);
+    } else {
+      localStorage.setItem(LAYOUT_KEY, layoutMode);
+    }
     applyLayoutMode();
   });
   // Re-evaluate on rotate/resize (only matters while in `auto`).
@@ -1791,27 +1819,8 @@ function emptyState() {
   ]);
 }
 
-// Read the master's "### 소수 의견" section to judge whether the models converged.
-// Returns { state:'dissent', text } | { state:'consensus' } | null (no verdict yet:
-// still running, errored, or the section was omitted so we claim nothing).
-function masterVerdict(turn) {
-  const r = turn && turn.master;
-  if (!(r && r.status === 'done' && r.text)) return null;
-  const m = /###\s*(?:소수\s*의견|minority\s*opinion)\s*\n?([\s\S]*)$/i.exec(r.text);
-  if (!m) return null;
-  const body = m[1].replace(/[\s*_`>#-]+$/, '').trim();
-  if (!body) return null;
-  // "No meaningful dissent": the instructed sentinels ('특이한 소수 의견 없음' / 'No notable
-  // minority opinion') and common paraphrases in either language.
-  const noDissent =
-    /(소수\s*의견|이견|차이|다른\s*점|반대|이의|불일치)\s*(은|는|이|가|점)?\s*(거의|딱히|특별히|크게)?\s*(없|관찰되지\s*않|발견되지\s*않|나타나지\s*않|존재하지\s*않|보이지\s*않)/.test(body)
-    || /특이\s*(한|사항)?\s*(점|것|의견)?\s*(은|는|이|가)?\s*없/.test(body)
-    || (body.length <= 12 && /^[\s·\-*]*없(음|습니다|다)?[.!]?$/.test(body))
-    || /\bno\b[\s\S]{0,40}\b(minority|dissent|disagree|difference|diverg|conflict)/i.test(body)
-    || (body.length <= 16 && /^[\s·\-*]*(none|n\/a)[.!]?$/i.test(body));
-  if (noDissent) return { state: 'consensus' };
-  return { state: 'dissent', text: body };
-}
+// masterVerdict (the bilingual "### 소수 의견 / Minority opinion" parser) now lives in
+// ./analysis.js (imported above) so it can be unit-tested.
 
 // Timeout / abort are detected by matching either language's marker, so control
 // flow keeps working after a language switch and for turns saved in the other lang.
@@ -2458,37 +2467,8 @@ function ensembleInfo(turn) {
   const ready = settled && doneTexts.length >= 2;
   return { doneCount: doneTexts.length, total: models.length, settled, ready, sig: ready ? similaritySignal(doneTexts) : null };
 }
-// Pairwise char-bigram similarity over finished answers → { state, score } or null.
-function similaritySignal(texts) {
-  const sets = texts.map(ensembleGrams);
-  let sum = 0, pairs = 0;
-  for (let i = 0; i < sets.length; i++) {
-    for (let j = i + 1; j < sets.length; j++) {
-      if (!sets[i].size || !sets[j].size) continue; // skip answers with no comparable words (code/emoji only)
-      sum += jaccardSim(sets[i], sets[j]); pairs++;
-    }
-  }
-  if (pairs === 0) return null; // nothing comparable → no similarity number
-  const score = sum / pairs;
-  // Conservative bands: only flag clear agreement/divergence, else neutral "mixed".
-  const state = score >= 0.30 ? 'agree' : (score <= 0.12 ? 'diverge' : 'mixed');
-  return { state, score };
-}
-function ensembleGrams(text) {
-  // Character bigrams over letters/numbers — robust across Korean (agglutinative: particle
-  // differences barely change bigrams), English, and code. Pure emoji/punctuation → empty set.
-  const norm = String(text).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
-  const grams = new Set();
-  for (let i = 0; i < norm.length - 1; i++) grams.add(norm.slice(i, i + 2));
-  if (norm.length === 1) grams.add(norm);
-  return grams;
-}
-function jaccardSim(a, b) {
-  if (!a.size || !b.size) return 0;
-  let inter = 0;
-  for (const w of a) if (b.has(w)) inter++;
-  return inter / (a.size + b.size - inter);
-}
+// similaritySignal (with its ensembleGrams/jaccardSim helpers) now lives in
+// ./analysis.js (imported above) so it can be unit-tested.
 
 // The per-turn ensemble strip (shown when master is off). While answers are still
 // arriving it stays muted with a disabled 교차검증 button; once every model has
@@ -3889,65 +3869,85 @@ function saveSettingsFromForm() {
   setTimeout(closeSettings, 350);
 }
 
+// Disable the destructive Danger-Zone buttons while a reset/delete runs, so a
+// second click can't kick off an overlapping wipe (the batched delete of a huge
+// account can take a moment).
+function setDangerBusy(on) {
+  for (const sel of ['#resetChatsBtn', '#resetAllBtn', '#deleteAccountBtn']) {
+    const b = $(sel);
+    if (b) b.disabled = !!on;
+  }
+}
+
 async function resetEverything() {
   const who = session ? `'${session.displayName}'` : t('reset.current_user');
-  const ok = confirm(t('confirm.reset_all', { who }));
+  const ok = confirm(t('confirm.reset_all', { who, count: chats.length }));
   if (!ok) return;
 
-  if (activeController) activeController.abort();
-  if (session.mode === 'online') {
-    const rows = await listChats(session.id, session.key);
-    for (const c of rows) await deleteChat(c.id);
-  } else {
-    await clearUserData(session.id);
+  setDangerBusy(true);
+  try {
+    if (activeController) activeController.abort();
+    if (session.mode === 'online') {
+      const rows = await listChats(session.id, session.key);
+      for (const c of rows) await deleteChat(c.id);
+    } else {
+      await clearUserData(session.id);
+    }
+    localStorage.removeItem(SETTINGS_PREFIX + session.id);
+    settings = defaultSettings();
+    await persistSettings();
+
+    // reset in-memory UI state
+    chats = [];
+    currentChat = null;
+    turns = [];
+
+    masterToggle.checked = settings.masterEnabled;
+    setViewButtons();
+    renderChips();
+    renderChatList();
+    renderMessages();
+    renderChatTitle();
+
+    // refresh the open settings form to defaults
+    $('#customPrompt').value = settings.customPrompt;
+    const richEl = $('#richStyleToggle');
+    if (richEl) richEl.checked = settings.richStyle !== false;
+    const timeoutInput = $('#timeoutInput');
+    if (timeoutInput) timeoutInput.value = Math.round((settings.timeoutMs || 60000) / 1000);
+    const maxTokInput = $('#maxTokensInput');
+    if (maxTokInput) maxTokInput.value = settings.maxTokens || 8192;
+    renderModelSettings();
+    refreshStorageInfo();
+    $('#saveHint').textContent = t('savehint.reset_done');
+    if (session.mode === 'online') scheduleSync();
+    setTimeout(closeSettings, 600);
+  } finally {
+    setDangerBusy(false);
   }
-  localStorage.removeItem(SETTINGS_PREFIX + session.id);
-  settings = defaultSettings();
-  await persistSettings();
-
-  // reset in-memory UI state
-  chats = [];
-  currentChat = null;
-  turns = [];
-
-  masterToggle.checked = settings.masterEnabled;
-  setViewButtons();
-  renderChips();
-  renderChatList();
-  renderMessages();
-  renderChatTitle();
-
-  // refresh the open settings form to defaults
-  $('#customPrompt').value = settings.customPrompt;
-  const richEl = $('#richStyleToggle');
-  if (richEl) richEl.checked = settings.richStyle !== false;
-  const timeoutInput = $('#timeoutInput');
-  if (timeoutInput) timeoutInput.value = Math.round((settings.timeoutMs || 60000) / 1000);
-  const maxTokInput = $('#maxTokensInput');
-  if (maxTokInput) maxTokInput.value = settings.maxTokens || 8192;
-  renderModelSettings();
-  refreshStorageInfo();
-  $('#saveHint').textContent = t('savehint.reset_done');
-  if (session.mode === 'online') scheduleSync();
-  setTimeout(closeSettings, 600);
 }
 
 async function resetChatsOnly() {
   const who = session ? `'${session.displayName}'` : t('reset.current_user');
-  const ok = confirm(t('confirm.reset_chats', { who }));
+  const ok = confirm(t('confirm.reset_chats', { who, count: chats.length }));
   if (!ok) return;
 
-  if (activeController) activeController.abort();
-  await deleteAllChats(session.id);
-  chats = [];
-  currentChat = null;
-  turns = [];
-  renderChatTitle();
-  renderChatList();
-  renderMessages();
-  refreshStorageInfo();
-  $('#saveHint').textContent = t('savehint.reset_chats_done');
-  if (session.mode === 'online') scheduleSync();
+  setDangerBusy(true);
+  try {
+    if (activeController) activeController.abort();
+    await deleteAllChats(session.id);
+    chats = [];
+    currentChat = null;
+    turns = [];
+    renderChatTitle();
+    renderChatList();
+    renderMessages();
+    refreshStorageInfo();
+    $('#saveHint').textContent = t('savehint.reset_chats_done');
+    if (session.mode === 'online') scheduleSync();
+  } finally {
+    setDangerBusy(false);
+  }
 }
 
 async function deleteCurrentAccount() {

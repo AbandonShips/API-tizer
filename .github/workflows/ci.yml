@@ -1,0 +1,29 @@
+name: CI
+
+# The app is a dependency-free static site (no build, no npm packages), so CI is
+# intentionally tiny: syntax-check every JS module and run the pure-logic tests.
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Syntax-check all JS modules
+        run: |
+          set -e
+          for f in src/*.js worker/*.js test/*.mjs; do
+            node --check "$f"
+            echo "ok: $f"
+          done
+
+      - name: Run unit tests
+        run: node test/run.mjs

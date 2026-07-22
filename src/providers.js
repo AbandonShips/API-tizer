@@ -276,7 +276,7 @@ async function streamGemini(model, messages, { signal, onChunk, onCitations, web
     ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
     contents,
   };
-  // Google Search grounding (works on Gemini 2.x models).
+  // Google Search grounding via the google_search tool (Gemini 2.x and 3.x).
   if (webSearch) body.tools = [{ google_search: {} }];
 
   const url = `${base}/models/${encodeURIComponent(model.model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(model.apiKey)}`;
@@ -332,7 +332,7 @@ function streamChatOnce(model, messages, opts = {}) {
 }
 
 // Transient upstream hiccups — e.g. Gemini's "high demand" / "model is overloaded" (503) or
-// 429 rate limits — are common when a popular model (like gemini-3.5-flash) is busy, and they
+// 429 rate limits — are common when a popular model (like gemini-3.6-flash) is busy, and they
 // clear on their own. These spikes are server-side (they hit paid tiers too), so auto-retry a
 // couple of times with a few seconds' backoff — but ONLY before any tokens have streamed (so
 // output is never duplicated), never on auth/bad-request errors, and never after the user Stops.

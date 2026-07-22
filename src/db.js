@@ -165,29 +165,45 @@ export async function updateChatMeta(user, key, chat) {
 export const updateChatTitle = updateChatMeta;
 
 export async function deleteChat(chatId) {
+  const db = await openDB();
   if (syncEnabled) {
     // Tombstone so the deletion propagates to other devices, then re-syncs away.
-    const store = await tx('chats', 'readwrite');
-    const row = await reqToPromise(store.get(chatId));
-    if (row) {
-      row.deleted = 1;
-      row.dirty = 1;
-      row.updatedAt = Date.now();
-      await reqToPromise((await tx('chats', 'readwrite')).put(row));
-    }
-    const tstore = await tx('turns', 'readwrite');
-    const keys = await reqToPromise(tstore.index('chatId').getAll(IDBKeyRange.only(chatId)));
-    for (const t of keys) {
-      t.deleted = 1; t.dirty = 1; t.updatedAt = Date.now();
-      await reqToPromise((await tx('turns', 'readwrite')).put(t));
-    }
+    // One transaction spanning both stores (was: a fresh transaction per turn,
+    // which crawled — and risked auto-committing mid-loop — on a long chat).
+    const now = Date.now();
+    await new Promise((res, rej) => {
+      const txn = db.transaction(['chats', 'turns'], 'readwrite');
+      const chats = txn.objectStore('chats');
+      const turns = txn.objectStore('turns');
+      chats.get(chatId).onsuccess = (e) => {
+        const row = e.target.result;
+        if (row) { row.deleted = 1; row.dirty = 1; row.updatedAt = now; chats.put(row); }
+      };
+      turns.index('chatId').openCursor(IDBKeyRange.only(chatId)).onsuccess = (e) => {
+        const cur = e.target.result;
+        if (!cur) return;
+        const row = cur.value;
+        row.deleted = 1; row.dirty = 1; row.updatedAt = now;
+        cur.update(row);
+        cur.continue();
+      };
+      txn.oncomplete = () => res();
+      txn.onerror = () => rej(txn.error);
+    });
     return;
   }
-  await reqToPromise((await tx('chats', 'readwrite')).delete(chatId));
-  const store = await tx('turns', 'readwrite');
-  const idx = store.index('chatId');
-  const keys = await reqToPromise(idx.getAllKeys(IDBKeyRange.only(chatId)));
-  for (const k of keys) store.delete(k);
+  // Local-only: hard-delete the chat and all its turns in a single transaction.
+  await new Promise((res, rej) => {
+    const txn = db.transaction(['chats', 'turns'], 'readwrite');
+    txn.objectStore('chats').delete(chatId);
+    const turns = txn.objectStore('turns');
+    turns.index('chatId').openKeyCursor(IDBKeyRange.only(chatId)).onsuccess = (e) => {
+      const cur = e.target.result;
+      if (cur) { turns.delete(cur.primaryKey); cur.continue(); }
+    };
+    txn.oncomplete = () => res();
+    txn.onerror = () => rej(txn.error);
+  });
 }
 
 export async function deleteAllChats(user) {
@@ -196,22 +212,29 @@ export async function deleteAllChats(user) {
   );
 
   if (syncEnabled) {
+    // Tombstone every chat + turn in a single transaction (was one transaction
+    // per row, which crawled when clearing a large account).
+    const db = await openDB();
     const now = Date.now();
-    for (const c of userChats) {
-      c.deleted = 1;
-      c.dirty = 1;
-      c.updatedAt = now;
-      await reqToPromise((await tx('chats', 'readwrite')).put(c));
-    }
-    const turnRows = await reqToPromise(
-      (await tx('turns', 'readonly')).index('user').getAll(IDBKeyRange.only(user))
-    );
-    for (const t of turnRows) {
-      t.deleted = 1;
-      t.dirty = 1;
-      t.updatedAt = now;
-      await reqToPromise((await tx('turns', 'readwrite')).put(t));
-    }
+    await new Promise((res, rej) => {
+      const txn = db.transaction(['chats', 'turns'], 'readwrite');
+      const chats = txn.objectStore('chats');
+      const turns = txn.objectStore('turns');
+      for (const c of userChats) {
+        c.deleted = 1; c.dirty = 1; c.updatedAt = now;
+        chats.put(c);
+      }
+      turns.index('user').openCursor(IDBKeyRange.only(user)).onsuccess = (e) => {
+        const cur = e.target.result;
+        if (!cur) return;
+        const row = cur.value;
+        row.deleted = 1; row.dirty = 1; row.updatedAt = now;
+        cur.update(row);
+        cur.continue();
+      };
+      txn.oncomplete = () => res();
+      txn.onerror = () => rej(txn.error);
+    });
     return userChats.length;
   }
 

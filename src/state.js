@@ -31,7 +31,9 @@ export const MODEL_PRESETS = {
     { model: 'claude-haiku-4-5', label: 'Claude Haiku 4.5', priceIn: 1, priceOut: 5, vision: true },
   ],
   gemini: [
+    { model: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash', priceIn: 1.5, priceOut: 7.5, vision: true },
     { model: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash', priceIn: 1.5, priceOut: 9, vision: true },
+    { model: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash-Lite', priceIn: 0.3, priceOut: 2.5, vision: true },
     { model: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro Preview', priceIn: 2, priceOut: 12, vision: true },
     { model: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash-Lite', priceIn: 0.25, priceOut: 1.5, vision: true },
     { model: 'gemini-3-flash-preview', label: 'Gemini 3 Flash Preview', priceIn: 0.5, priceOut: 3, vision: true },
@@ -66,7 +68,7 @@ export function defaultSettings() {
     models: [
       { id: 'openai', type: 'openai', label: 'ChatGPT', apiKey: '', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.6-luna', enabled: true, vision: true, priceIn: 1, priceOut: 6 },
       { id: 'anthropic', type: 'anthropic', label: 'Claude', apiKey: '', baseUrl: 'https://api.anthropic.com/v1', model: 'claude-sonnet-5', enabled: true, vision: true, priceIn: 3, priceOut: 15 },
-      { id: 'gemini', type: 'gemini', label: 'Gemini', apiKey: '', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-3.5-flash', enabled: true, vision: true, priceIn: 1.5, priceOut: 9 },
+      { id: 'gemini', type: 'gemini', label: 'Gemini', apiKey: '', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-3.6-flash', enabled: true, vision: true, priceIn: 1.5, priceOut: 7.5 },
       { id: 'grok', type: 'grok', label: 'Grok', apiKey: '', baseUrl: 'https://api.x.ai/v1', model: 'grok-4.3', enabled: true, vision: true, priceIn: 1.25, priceOut: 2.5 },
     ],
   };
@@ -146,6 +148,8 @@ const PRICING = [
   [/claude.*opus|opus/i, 5.00, 25.00],
   [/claude.*sonnet|claude-3-7|sonnet/i, 3.00, 15.00],
   // Gemini
+  [/gemini-3\.6-flash/i, 1.50, 7.50],
+  [/gemini-3\.5-flash-lite/i, 0.30, 2.50],
   [/gemini-3\.5-flash/i, 1.50, 9.00],
   [/gemini-3\.1-pro/i, 2.00, 12.00],
   [/gemini-3\.1-flash-lite/i, 0.25, 1.50],
@@ -179,6 +183,25 @@ export function effectivePrice(model) {
     return priceFor(model.model);
   }
   return priceFor(model); // string model name
+}
+
+// Dev/test sanity check: every MODEL_PRESETS entry's priceIn/out should match what
+// the PRICING table resolves for its model name. If they drift, a user who types the
+// same model name by hand would be billed at a different rate than the preset (it
+// usually means a new PRICING regex is missing or mis-ordered). Returns a list of
+// mismatches ([] when consistent). See test/run.mjs and the dev boot check in main.js.
+export function checkPricingConsistency() {
+  const issues = [];
+  for (const [type, presets] of Object.entries(MODEL_PRESETS)) {
+    for (const p of presets) {
+      const table = priceFor(p.model);
+      if (!table) { issues.push({ type, model: p.model, preset: [p.priceIn, p.priceOut], table: null }); continue; }
+      if (table.in !== p.priceIn || table.out !== p.priceOut) {
+        issues.push({ type, model: p.model, preset: [p.priceIn, p.priceOut], table: [table.in, table.out] });
+      }
+    }
+  }
+  return issues;
 }
 
 // Estimate cost in USD for a single exchange given prompt + completion tokens.
