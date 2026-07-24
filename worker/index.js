@@ -18,12 +18,20 @@
  *   POST /api/auth/change   {kdf_salt, kdf_iterations, auth_token}  (Bearer) -> {token, server_time}
  *   GET  /api/sync/pull?since=<ms>&limit=<n>   (Bearer)             -> {server_time, items, more}
  *   POST /api/sync/push     {items:[...]}      (Bearer)             -> {server_time, items}
+ *   POST /api/share/create  {iv, ct}           (Bearer)             -> {id, expires_at}
+ *   GET  /api/share/get?id=<id>                 (public, no auth)    -> {iv, ct, created_at, expires_at}
  *
  * Changing the password rotates Key B (auth) and Key A (data), bumps the
  * user's `auth_changed_at`, and wipes the server's items so the client can
  * re-push everything re-encrypted under the new Key A. Any still-valid token
  * issued before that moment is rejected (401), which forces other devices to
  * log in again with the new password.
+ *
+ * Share links stay zero-knowledge: the fresh per-share AES key travels only in
+ * the link's URL fragment (never sent to the server), so the stored iv+ct are an
+ * opaque snapshot. `GET /api/share/get` is the ONLY unauthenticated read — anyone
+ * with the link can fetch the ciphertext, but only the fragment key decrypts it.
+ * Shares are frozen snapshots that auto-expire; a Cron trigger purges expired rows.
  *
  * Required binding:  DB    (D1 database)
  * Required secret:   AUTH_SECRET   (HMAC key for session tokens)
@@ -34,6 +42,11 @@ const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const AUTH_HASH_ITERATIONS = 100_000;
 const PULL_LIMIT_DEFAULT = 500;
 const PULL_LIMIT_MAX = 2000;
+const SHARE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // shared links auto-expire after 7 days
+// D1 caps a row (and any single string/BLOB value) at 2,000,000 bytes. Keep the
+// ciphertext comfortably under that so the whole row always fits; the client
+// enforces a tighter plaintext budget and offers a text-only fallback.
+const SHARE_MAX_CT_CHARS = 1_700_000;
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -57,11 +70,20 @@ export default {
       if (request.method === 'POST' && path === '/api/auth/change') return await handleChange(request, env, cors);
       if (request.method === 'GET' && path === '/api/sync/pull') return await handlePull(request, env, url, cors);
       if (request.method === 'POST' && path === '/api/sync/push') return await handlePush(request, env, cors);
+      if (request.method === 'POST' && path === '/api/share/create') return await handleShareCreate(request, env, cors);
+      if (request.method === 'GET' && path === '/api/share/get') return await handleShareGet(request, env, url, cors);
 
       return json({ error: 'not found' }, 404, cors);
     } catch (err) {
       return json({ code: 'server_error', error: 'server error', detail: String(err && err.message || err) }, 500, cors);
     }
+  },
+
+  // Cron trigger (see wrangler.toml [triggers]): purge expired share snapshots so
+  // the table doesn't accumulate dead rows. Reads already reject expired shares, so
+  // this is pure housekeeping / storage-cost control.
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(env.DB.prepare('DELETE FROM shares WHERE expires_at < ?').bind(Date.now()).run());
   },
 };
 
@@ -217,6 +239,54 @@ async function handlePush(request, env, cors) {
 }
 
 // ---------------------------------------------------------------------------
+// Share handlers (public read-only snapshot links)
+// ---------------------------------------------------------------------------
+
+// Create a share snapshot. Requires auth (only logged-in users can publish), but
+// the stored row holds nothing readable: the decryption key lives solely in the
+// link fragment on the client. Title/date/messages are all inside `ct`.
+async function handleShareCreate(request, env, cors) {
+  const user = await requireAuth(request, env);
+  if (!user) return errRes('auth_required', 'Authentication is required.', 401, cors);
+
+  const body = await readJson(request);
+  const iv = typeof body.iv === 'string' ? body.iv : '';
+  const ct = typeof body.ct === 'string' ? body.ct : '';
+  if (!iv || !ct) return errRes('missing_fields', 'Required fields are missing.', 400, cors);
+  if (ct.length > SHARE_MAX_CT_CHARS) return errRes('share_too_large', 'The shared conversation is too large.', 413, cors);
+
+  const now = Date.now();
+  const id = randomShareId();
+  const expiresAt = now + SHARE_TTL_MS;
+  await env.DB.prepare(
+    'INSERT INTO shares (id, username, created_at, expires_at, iv, ct) VALUES (?, ?, ?, ?, ?, ?)'
+  ).bind(id, user, now, expiresAt, iv, ct).run();
+
+  return json({ id, expires_at: expiresAt }, 200, cors);
+}
+
+// Public read: anyone holding the link can fetch the opaque snapshot. No auth. The
+// fragment key (never seen here) is what actually decrypts it. Expired rows are
+// treated as gone (and lazily deleted) so a stale link reveals nothing.
+async function handleShareGet(request, env, url, cors) {
+  const id = String(url.searchParams.get('id') || '').trim();
+  if (!id || id.length > 128) return errRes('share_not_found', 'This shared link was not found.', 404, cors);
+
+  const row = await env.DB.prepare(
+    'SELECT created_at, expires_at, iv, ct FROM shares WHERE id = ?'
+  ).bind(id).first();
+  if (!row) return errRes('share_not_found', 'This shared link was not found.', 404, cors);
+
+  if (Number(row.expires_at || 0) < Date.now()) {
+    // Lazy cleanup: drop the dead row on read so it can't linger past its TTL.
+    await env.DB.prepare('DELETE FROM shares WHERE id = ?').bind(id).run();
+    return errRes('share_expired', 'This shared link has expired.', 410, cors);
+  }
+
+  return json({ iv: row.iv, ct: row.ct, created_at: row.created_at, expires_at: row.expires_at }, 200, cors);
+}
+
+// ---------------------------------------------------------------------------
 // Auth helpers
 // ---------------------------------------------------------------------------
 
@@ -328,6 +398,13 @@ function randomB64(n) {
   const b = new Uint8Array(n);
   crypto.getRandomValues(b);
   return b64Encode(b);
+}
+
+// URL-safe random id for public share links (128 bits of entropy).
+function randomShareId() {
+  const b = new Uint8Array(16);
+  crypto.getRandomValues(b);
+  return b64Encode(b).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
 function b64Encode(bytes) {

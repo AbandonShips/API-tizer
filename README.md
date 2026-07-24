@@ -1,6 +1,6 @@
 # ![API-tizer 로고](./favicon.png) API-Tizer
 
-**현재 버전: v1.4.3**
+**현재 버전: v1.5.0**
 
 ChatGPT · Claude · Gemini · Grok · 로컬 OpenAI 호환 모델을 한 화면에서 동시에 호출하고 비교하는 개인용 멀티 AI 콘솔입니다.
 
@@ -21,6 +21,7 @@ ChatGPT · Claude · Gemini · Grok · 로컬 OpenAI 호환 모델을 한 화면
 - 모델별 토큰/비용 추정치 누적 및 접이식 비용 패널
 - 주요 제공자 모델 프리셋과 단가 자동 입력
 - 로컬 암호화 저장 또는 Cloudflare Worker 기반 온라인 동기화
+- **읽기 전용 공유 링크** — 대화를 링크 하나로 공유. 링크를 가진 사람은 로그인 없이 그 대화만 볼 수 있고, 복호화 키는 링크 안(URL `#`)에만 있어 서버엔 암호문만 저장됩니다. 공유는 그 시점의 고정 스냅샷이며 7일 후 자동 만료
 - **한국어 / English UI** — 로그인 화면 또는 설정에서 전환
 - PC/모바일 레이아웃 자동 전환 및 수동 고정
 
@@ -46,12 +47,21 @@ ChatGPT · Claude · Gemini · Grok · 로컬 OpenAI 호환 모델을 한 화면
 - Per‑model token/cost estimates accumulated with a collapsible cost panel
 - Presets and pricing for major providers auto‑filled
 - Local encrypted storage or Cloudflare Worker‑based online sync
+- **Read‑only share links (zero‑knowledge)** — share a conversation as a link. Anyone with the link can view just that chat without logging in; the decryption key lives only in the link (URL `#`), so the server stores ciphertext only. A share is a frozen snapshot and auto‑expires after 7 days
 - **한국어 / English UI** — switch on the login screen or in Settings
 - Automatic PC/mobile layout switching with manual override
 
 ---
 
 ## 변경 사항
+
+### v1.5.0
+
+- **읽기 전용 공유 링크(영지식)를 추가했습니다.** ChatGPT·Gemini처럼 대화를 링크 하나로 공유할 수 있습니다. 링크를 받은 사람은 로그인 없이 그 대화만 읽을 수 있고, **복호화 키는 링크의 URL 프래그먼트(`#`)에만** 담겨 서버로 전송되지 않으므로 서버(Cloudflare Worker)에는 **열 수 없는 암호문만** 저장됩니다.
+  - **고정 스냅샷** — 공유한 그 순간까지의 내용만 담기며, 이후 원본에서 대화를 더 이어가도 링크는 자동으로 바뀌지 않습니다.
+  - **7일 후 자동 만료**
+  - **이미지 포함 선택** — 기본은 텍스트만 공유하며, 필요하면 이미지를 압축(최대 1280px)해 함께 담을 수 있습니다. 용량이 크면 텍스트만 공유하도록 안내합니다.
+  - **뷰어 & 가져오기** — 공유 링크는 사이드바·입력창 없는 읽기 전용 화면으로 열립니다. Markdown으로 복사하거나, 내 계정으로 가져와 이어서 대화할 수 있습니다.
 
 ### v1.4.3
 

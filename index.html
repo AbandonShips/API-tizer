@@ -103,6 +103,7 @@
             <button id="helpBtn" class="icon-round" data-i18n-title="top.help_title" title="도움말 · 단축키">?</button>
             <button id="compactBtn" class="btn btn-ghost btn-sm" data-i18n="top.compact" data-i18n-title="top.compact_title" title="이전 대화를 짧게 요약해서 다음 질문부터 토큰(비용)을 줄여줍니다. 화면의 대화 내용은 그대로 유지돼요." hidden>🗜 대화 압축</button>
             <button id="exportBtn" class="btn btn-ghost btn-sm" data-i18n="top.export" data-i18n-title="top.export_title" title="대화를 Markdown 파일로 내보내기">⬇ 내보내기</button>
+            <button id="shareBtn" class="btn btn-ghost btn-sm" data-i18n="top.share" data-i18n-title="top.share_title" title="이 대화를 읽기 전용 링크로 공유 (7일 후 자동 만료)">🔗 공유</button>
             <div class="seg" id="viewToggle" data-i18n-title="top.view_title" title="분할: 모델별 답을 나란히 / 통합: 한 컬럼으로 모아 보기">
               <button data-view="split" class="seg-btn" data-i18n="top.view_split" data-i18n-title="top.view_split_title" title="모델별 답변을 나란히 비교">⬛⬛ 분할</button>
               <button data-view="unified" class="seg-btn" data-i18n="top.view_unified" data-i18n-title="top.view_unified_title" title="한 컬럼으로 모아 보기 (마스터 요약 + 개별 답 펼치기)">▤ 통합</button>
@@ -139,6 +140,10 @@
         </footer>
       </main>
     </div>
+
+    <!-- Read-only shared conversation viewer. Shown instead of the app/login when the
+         URL is a "#s=" share link; populated by src/main.js via src/share.js. -->
+    <div id="shareView" class="share-view" hidden></div>
 
     <!-- Settings modal -->
     <div id="settingsModal" class="modal" hidden>

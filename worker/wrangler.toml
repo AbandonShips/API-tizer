@@ -20,3 +20,9 @@ ALLOW_ORIGIN = "https://abandonships.github.io,http://localhost:8753,http://127.
 # AUTH_SECRET is a SECRET, not a plain var. Set it with:
 #   wrangler secret put AUTH_SECRET
 # (use a long random string, e.g. `openssl rand -base64 48`)
+
+# --- Cron trigger -----------------------------------------------------------
+# Purges expired share snapshots once a day (03:17 UTC). Reads already reject
+# expired shares, so this is just housekeeping / storage-cost control.
+[triggers]
+crons = ["17 3 * * *"]

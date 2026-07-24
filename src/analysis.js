@@ -58,3 +58,74 @@ function jaccardSim(a, b) {
   for (const w of a) if (b.has(w)) inter++;
   return inter / (a.size + b.size - inter);
 }
+
+// Serialise a chat + its turns into a compact, self-contained snapshot for a
+// read-only share link. PURE: no DOM, no app state — the caller (share.js) has
+// already compressed/stripped image dataUrls, so this just projects the fields a
+// viewer needs and drops everything sensitive (API keys, other chats, settings).
+// The title + dates live INSIDE this object (which is then encrypted whole), so
+// no content metadata ever reaches the server.
+export function buildShareSnapshot(chat, turns, opts = {}) {
+  const includeImages = !!opts.includeImages;
+  const now = opts.now || Date.now();
+  const metaOf = (tn, id) => (tn.models && tn.models[id]) || { label: id, model: '' };
+
+  const out = [];
+  for (const tn of (turns || [])) {
+    if (tn.kind === 'compaction') {
+      out.push({ kind: 'compaction', summary: tn.summary || '', compactedCount: tn.compactedCount || 0 });
+      continue;
+    }
+    const attachments = (tn.attachments || []).map((a) => {
+      const base = { name: a.name || '', kind: a.kind || 'file', mime: a.mime || '' };
+      if (includeImages && a.kind === 'image' && a.dataUrl) base.dataUrl = a.dataUrl;
+      return base;
+    });
+    const answers = [];
+    for (const id of Object.keys(tn.responses || {})) {
+      const r = tn.responses[id] || {};
+      const m = metaOf(tn, id);
+      const isErr = r.status === 'error';
+      answers.push({
+        label: m.label || id,
+        model: m.model || '',
+        type: m.type || '',
+        status: r.status || 'done',
+        text: isErr ? '' : (r.text || ''),
+        ...(isErr ? { error: r.error || '' } : {}),
+        ...(Array.isArray(r.citations) && r.citations.length ? { citations: r.citations.map(normCitation) } : {}),
+      });
+    }
+    let master = null;
+    if (tn.masterEnabled && tn.master) {
+      const mm = metaOf(tn, tn.master.by || tn.masterId);
+      const isErr = tn.master.status === 'error';
+      master = {
+        label: mm.label || '',
+        type: mm.type || '',
+        status: tn.master.status || 'done',
+        text: isErr ? '' : (tn.master.text || ''),
+        ...(isErr ? { error: tn.master.error || '' } : {}),
+      };
+    }
+    let crossCheck = null;
+    if (tn.crossCheck && tn.crossCheck.text) {
+      const cm = metaOf(tn, tn.crossCheck.by);
+      crossCheck = { label: cm.label || '', text: tn.crossCheck.text || '' };
+    }
+    out.push({ user: tn.user || '', attachments, answers, master, crossCheck });
+  }
+
+  return {
+    v: 1,
+    title: (chat && chat.title) || '',
+    createdAt: (chat && chat.createdAt) || 0,
+    sharedAt: now,
+    turns: out,
+  };
+}
+
+function normCitation(c) {
+  if (typeof c === 'string') return { url: c, title: '' };
+  return { url: (c && c.url) || '', title: (c && c.title) || '' };
+}

@@ -30,6 +30,25 @@ export function fromB64(s) {
   return out;
 }
 
+// URL-safe base64 (no padding) — used to carry a share's raw key + ids in the URL
+// fragment, where '+' '/' '=' would be ambiguous or need escaping.
+export function toB64url(bytes) {
+  return toB64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+export function fromB64url(s) {
+  const t = String(s).replace(/-/g, '+').replace(/_/g, '/');
+  const pad = t.length % 4 ? '='.repeat(4 - (t.length % 4)) : '';
+  return fromB64(t + pad);
+}
+
+// Import raw bytes as an AES-GCM key. Used for share links, whose key is a fresh
+// random value (NOT the account's password-derived Key A) generated per share and
+// carried only in the URL fragment.
+export function importAesKey(rawBytes, extractable = false) {
+  return crypto.subtle.importKey('raw', rawBytes, { name: 'AES-GCM' }, extractable, ['encrypt', 'decrypt']);
+}
+
 // Derive an AES-GCM key from a password + salt. Non-extractable by default so
 // the raw data key cannot be saved or copied out of Web Crypto by app code.
 export async function deriveKey(password, saltBytes, iterations = PBKDF2_ITERATIONS, extractable = false) {

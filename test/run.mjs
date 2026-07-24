@@ -13,7 +13,7 @@ globalThis.localStorage ??= { getItem: () => null, setItem() {}, removeItem() {}
 globalThis.navigator ??= { language: 'ko' };
 
 import { priceFor, effectivePrice, estimateCost, estimateTokens, checkPricingConsistency } from '../src/state.js';
-import { masterVerdict, similaritySignal } from '../src/analysis.js';
+import { masterVerdict, similaritySignal, buildShareSnapshot } from '../src/analysis.js';
 import { renderMarkdown } from '../src/markdown.js';
 
 let passed = 0, failed = 0;
@@ -71,6 +71,45 @@ ok(!renderMarkdown('```\n<script>alert(1)</script>\n```').includes('<script>'), 
 }
 ok(renderMarkdown('visit https://example.com now').includes('<a href="https://example.com"'), 'bare https URL is autolinked');
 ok(!renderMarkdown('[x](https://e.com" onmouseover="alert(1))').includes('onmouseover="'), 'a quote inside the URL cannot break out of the href attribute');
+
+// ---- analysis.js: buildShareSnapshot (share-link projection; must never leak secrets) ----
+{
+  const chat = { title: 'My chat', createdAt: 111 };
+  const turns = [
+    {
+      id: 't1', createdAt: 1, user: 'hi',
+      attachments: [{ name: 'a.png', kind: 'image', mime: 'image/png', dataUrl: 'data:image/png;base64,AAAA' }],
+      modelIds: ['openai', 'anthropic'],
+      models: {
+        openai: { id: 'openai', label: 'ChatGPT', model: 'gpt-x', type: 'openai', apiKey: 'SECRETKEY1' },
+        anthropic: { id: 'anthropic', label: 'Claude', model: 'claude-x', type: 'anthropic', apiKey: 'SECRETKEY2' },
+        master1: { id: 'master1', label: 'ChatGPT', model: 'gpt-x', type: 'openai' },
+      },
+      responses: {
+        openai: { status: 'done', text: 'A1', citations: [{ url: 'https://x.com', title: 'X' }] },
+        anthropic: { status: 'error', error: 'boom' },
+      },
+      masterEnabled: true, masterId: 'master1',
+      master: { status: 'done', text: 'MASTER', by: 'master1' },
+      crossCheck: { status: 'done', text: 'CC', by: 'openai' },
+    },
+    { kind: 'compaction', summary: 'old stuff', compactedCount: 4, coversUpTo: 0 },
+  ];
+
+  const textOnly = buildShareSnapshot(chat, turns, { includeImages: false, now: 999 });
+  ok(textOnly.v === 1 && textOnly.title === 'My chat' && textOnly.createdAt === 111 && textOnly.sharedAt === 999, 'snapshot carries title/createdAt/sharedAt inside');
+  ok(textOnly.turns[0].attachments[0].dataUrl === undefined, 'text-only snapshot drops image dataUrls');
+  ok(textOnly.turns[0].answers.length === 2 && textOnly.turns[0].answers[0].text === 'A1', 'answers projected');
+  ok(textOnly.turns[0].answers[0].citations && textOnly.turns[0].answers[0].citations[0].url === 'https://x.com', 'citations normalized');
+  ok(textOnly.turns[0].answers[1].status === 'error' && textOnly.turns[0].answers[1].text === '' && textOnly.turns[0].answers[1].error === 'boom', 'error answer keeps error, drops text');
+  ok(textOnly.turns[0].master.text === 'MASTER' && textOnly.turns[0].master.label === 'ChatGPT', 'master projected');
+  ok(textOnly.turns[0].crossCheck.text === 'CC', 'crossCheck projected');
+  ok(textOnly.turns[1].kind === 'compaction' && textOnly.turns[1].summary === 'old stuff', 'compaction marker preserved');
+  ok(!JSON.stringify(textOnly).includes('SECRETKEY'), 'snapshot NEVER contains API keys');
+
+  const withImages = buildShareSnapshot(chat, turns, { includeImages: true, now: 1 });
+  ok(withImages.turns[0].attachments[0].dataUrl === 'data:image/png;base64,AAAA', 'include-images snapshot keeps image dataUrls');
+}
 
 // ---- report ----
 console.log(`\n${passed} passed, ${failed} failed`);

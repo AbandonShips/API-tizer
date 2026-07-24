@@ -58,6 +58,9 @@ const SERVER_ERR_KEYS = {
   auth_required: 'server.auth_required',
   too_many_items: 'server.too_many_items',
   server_error: 'server.server_error',
+  share_too_large: 'server.share_too_large',
+  share_not_found: 'server.share_not_found',
+  share_expired: 'server.share_expired',
 };
 function serverErrorMessage(data, status) {
   const code = data && data.code;
@@ -126,6 +129,15 @@ export async function serverChangePassword({ token, kdfSalt, kdfIterations, auth
     token,
     body: { kdf_salt: kdfSalt, kdf_iterations: kdfIterations, auth_token: authToken },
   });
+}
+
+// --- Share links ------------------------------------------------------------
+// Publish a read-only snapshot. The server stores only the opaque {iv, ct}; the
+// fresh per-share decryption key travels in the link fragment (see src/share.js)
+// and never reaches the server. Requires a bearer token (only logged-in users can
+// publish). Returns { id, expires_at }.
+export async function apiCreateShare(token, { iv, ct }) {
+  return api('/api/share/create', { method: 'POST', token, body: { iv, ct } });
 }
 
 // --- Delta sync orchestration ----------------------------------------------

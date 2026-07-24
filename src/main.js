@@ -24,6 +24,7 @@ import {
 import { runSync, isConfigured as syncConfigured, getEndpoint, setEndpoint, serverLogin, serverChangePassword } from './sync.js';
 import { streamChat, supportsWebSearch } from './providers.js';
 import { renderMarkdown } from './markdown.js';
+import { createShareLink, loadShareFromLocation, isShareUrl } from './share.js';
 import { t, getLang, setLang, applyI18n, onLangChange } from './i18n.js';
 
 // AI system instructions (rich formatting, continuity L0, master editor, cross-check,
@@ -116,13 +117,20 @@ let swipeStart = null;
 // =====================================================================
 //  Boot
 // =====================================================================
-initAppEvents();
-setupViewportHeight();
-setupSettingsModal();
-setupTooltips();
-setupLayoutToggle();
-setupThemeToggle();
-initAuth();
+// A "#s=" share link opens a self-contained read-only viewer instead of the app /
+// login gate — no session, no decryption of the local account, just the shared
+// snapshot decrypted from the link fragment.
+if (isShareUrl()) {
+  enterShareViewer();
+} else {
+  initAppEvents();
+  setupViewportHeight();
+  setupSettingsModal();
+  setupTooltips();
+  setupLayoutToggle();
+  setupThemeToggle();
+  initAuth();
+}
 
 // Dev-only: warn if any model preset's price drifts from the PRICING table (a
 // custom-typed model of the same name would then be priced differently). Gated to
@@ -139,6 +147,7 @@ function initAppEvents() {
   $('#brandHomeBtn').addEventListener('click', () => { newChat(); closeDrawer(); });
   $('#settingsBtn').addEventListener('click', () => { openSettings(); closeDrawer(); });
   $('#exportBtn').addEventListener('click', exportChat);
+  $('#shareBtn').addEventListener('click', openShareModal);
   $('#compactBtn').addEventListener('click', manualCompact);
   $('#logoutBtn').addEventListener('click', logout);
   $('#resetUsageBtn').addEventListener('click', doResetUsage);
@@ -273,8 +282,10 @@ function onGlobalKeydown(e) {
   } else if (e.key === 'Escape') {
     const compactModal = document.getElementById('compact-modal');
     const masterSel = document.getElementById('master-select-modal');
+    const shareModal = document.getElementById('share-modal');
     if (compactModal) { if (typeof compactModal._resolveClose === 'function') compactModal._resolveClose(); else compactModal.remove(); }
     else if (masterSel) { if (typeof masterSel._resolveClose === 'function') masterSel._resolveClose(); else masterSel.remove(); }
+    else if (shareModal) shareModal.remove();
     else if (!$('#chatInstructionsModal').hidden) closeChatInstructions();
     else if (!$('#helpModal').hidden) closeHelp();
     else if (!$('#promptModal').hidden) closePromptModal();
@@ -1008,8 +1019,10 @@ async function bootAppData() {
   currentChat = null;
   turns = [];
   chats = await listChats(session.id, session.key);
+  const importedId = await maybeImportPendingShare();
   renderChatList();
-  if (chats.length) await openChat(chats[0].id);
+  if (importedId) await openChat(importedId);
+  else if (chats.length) await openChat(chats[0].id);
   else { renderChatTitle(); renderMessages(); }
   startIdleWatch();
 }
@@ -3533,6 +3546,393 @@ function exportChat() {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
+// =====================================================================
+//  Share — create a read-only zero-knowledge link
+// =====================================================================
+// The fresh per-share key stays in the returned URL fragment; the server only
+// ever gets ciphertext. See src/share.js for the crypto + upload.
+function openShareModal() {
+  if (!currentChat || !turns.some((tn) => tn.kind !== 'compaction')) {
+    showInlineNotice(t('share.empty'));
+    return;
+  }
+  // Sharing needs the Worker (to host the ciphertext), so it requires an online
+  // account. Local-only users have no server to publish to.
+  if (!(session && session.mode === 'online' && session.token)) {
+    showInlineNotice(t('share.need_online'));
+    return;
+  }
+
+  const existing = document.getElementById('share-modal');
+  if (existing) existing.remove();
+
+  const modal = h('div', { id: 'share-modal', class: 'modal' });
+  const close = () => modal.remove();
+  modal.appendChild(h('div', { class: 'modal-backdrop', onclick: close }));
+
+  const imgToggle = h('input', { type: 'checkbox' });
+  const hasImages = turns.some((tn) => (tn.attachments || []).some((a) => a.kind === 'image' && a.dataUrl));
+
+  const linkInput = h('input', { class: 'share-link-input', type: 'text', readonly: true, onfocus: (e) => e.target.select() });
+  const copyBtn = h('button', {
+    class: 'btn btn-primary btn-sm',
+    onclick: async () => {
+      try { await navigator.clipboard.writeText(linkInput.value); }
+      catch { linkInput.select(); }
+      copyBtn.textContent = t('share.copied');
+      setTimeout(() => { copyBtn.textContent = t('share.copy'); }, 1500);
+    },
+  }, t('share.copy'));
+  const expiryLabel = h('div', { class: 'share-expiry muted' });
+  const resultWrap = h('div', { class: 'share-result', hidden: true }, [
+    h('div', { class: 'share-ready muted' }, t('share.ready')),
+    h('div', { class: 'share-link-row' }, [linkInput, copyBtn]),
+    expiryLabel,
+  ]);
+
+  const errBox = h('div', { class: 'share-err', hidden: true });
+  const createBtn = h('button', { class: 'btn btn-primary' }, t('share.create'));
+
+  const doCreate = async (forceTextOnly) => {
+    createBtn.disabled = true;
+    const prev = createBtn.textContent;
+    createBtn.textContent = t('share.creating');
+    errBox.hidden = true;
+    try {
+      const includeImages = forceTextOnly ? false : imgToggle.checked;
+      const { url, expiresAt } = await createShareLink({ chat: currentChat, turns, includeImages, token: session.token });
+      linkInput.value = url;
+      expiryLabel.textContent = t('share.expires_on', { date: new Date(expiresAt).toLocaleString() });
+      resultWrap.hidden = false;
+      createBtn.style.display = 'none';
+      try { await navigator.clipboard.writeText(url); copyBtn.textContent = t('share.copied'); setTimeout(() => { copyBtn.textContent = t('share.copy'); }, 1500); }
+      catch { /* clipboard may be blocked; the field is selectable */ }
+    } catch (err) {
+      createBtn.disabled = false;
+      createBtn.textContent = prev;
+      errBox.hidden = false;
+      errBox.textContent = '';
+      if (err && err.code === 'share_too_large' && !forceTextOnly && imgToggle.checked) {
+        // Offer the text-only fallback the user asked for.
+        errBox.append(
+          h('span', {}, t('share.err_too_large_images') + ' '),
+          h('button', { class: 'btn btn-ghost btn-sm', onclick: () => doCreate(true) }, t('share.retry_text_only')),
+        );
+      } else if (err && err.code === 'share_too_large') {
+        errBox.textContent = t('share.err_too_large');
+      } else {
+        errBox.textContent = t('share.err_generic', { err: String((err && err.message) || err) });
+      }
+    }
+  };
+  createBtn.addEventListener('click', () => doCreate(false));
+
+  const card = h('div', { class: 'modal-card share-card' }, [
+    h('div', { class: 'modal-head' }, [
+      h('h2', {}, t('share.title')),
+      h('button', { class: 'icon-btn', onclick: close }, '\u2715'),
+    ]),
+    h('div', { class: 'modal-body' }, [
+      h('p', { class: 'muted', style: 'font-size:13px; line-height:1.5;' }, t('share.desc')),
+      h('p', { class: 'share-note' }, t('share.snapshot_note')),
+      h('p', { class: 'share-note' }, t('share.expiry_note')),
+      hasImages ? h('label', { class: 'opt-row share-img-row' }, [
+        imgToggle,
+        h('span', {}, [
+          h('div', {}, t('share.include_images')),
+          h('div', { class: 'muted', style: 'font-size:12px;' }, t('share.include_images_hint')),
+        ]),
+      ]) : null,
+      errBox,
+      resultWrap,
+    ]),
+    h('div', { class: 'modal-foot' }, [
+      h('button', { class: 'btn btn-ghost', onclick: close }, t('common.cancel')),
+      createBtn,
+    ]),
+  ]);
+  modal.appendChild(card);
+  document.body.appendChild(modal);
+}
+
+// =====================================================================
+//  Share — read-only viewer (opened when the URL is a #s= link)
+// =====================================================================
+async function enterShareViewer() {
+  document.title = 'API-Tizer';
+  applyTheme();
+  applyShareViewLayout();
+  window.addEventListener('resize', applyShareViewLayout);
+  applyI18n();
+  const authScreen = $('#authScreen');
+  if (authScreen) authScreen.hidden = true;
+  $('#app').hidden = true;
+  const root = $('#shareView');
+  root.hidden = false;
+  document.body.classList.add('is-shareview');
+  root.innerHTML = '';
+  root.appendChild(h('div', { class: 'share-view-loading' }, t('view.loading')));
+
+  try {
+    const { snapshot, createdAt } = await loadShareFromLocation();
+    renderShareView(root, snapshot, createdAt);
+  } catch (err) {
+    renderShareError(root, (err && err.code) || 'share_generic');
+  }
+}
+
+// The viewer runs outside the normal boot, so applyLayoutMode never fires. Mirror
+// its width→class logic (minus the app-only bits) so shared cards get the same
+// mobile refinements (wrapping card heads, tighter spacing) on a phone.
+function applyShareViewLayout() {
+  const mobile = window.innerWidth <= MOBILE_BREAKPOINT;
+  document.body.classList.toggle('is-mobile', mobile);
+  document.body.classList.toggle('is-narrow', mobile && window.innerWidth <= NARROW_BREAKPOINT);
+}
+
+function renderShareError(root, code) {
+  const map = {
+    share_invalid: 'view.err_invalid',
+    share_not_found: 'view.err_not_found',
+    share_expired: 'view.err_expired',
+    share_endpoint: 'view.err_endpoint',
+    share_offline: 'view.err_offline',
+  };
+  root.innerHTML = '';
+  root.appendChild(h('div', { class: 'share-view-error' }, [
+    h('img', { class: 'share-view-logo', src: './apitizer_logo.png', alt: 'API-Tizer' }),
+    h('p', { class: 'share-error-msg' }, t(map[code] || 'view.err_generic')),
+    h('a', { class: 'btn btn-primary', href: location.origin + location.pathname }, t('view.open_app')),
+  ]));
+}
+
+function renderShareView(root, snapshot, createdAt) {
+  root.innerHTML = '';
+
+  const copyBtn = h('button', { class: 'btn btn-ghost btn-sm' }, t('view.copy'));
+  copyBtn.addEventListener('click', () => {
+    navigator.clipboard.writeText(buildSnapshotMarkdown(snapshot)).then(() => {
+      copyBtn.textContent = t('view.copied');
+      setTimeout(() => { copyBtn.textContent = t('view.copy'); }, 1800);
+    }).catch(() => { /* clipboard blocked */ });
+  });
+  const importBtn = h('button', { class: 'btn btn-ghost btn-sm', onclick: () => stashImportAndOpen(snapshot) }, t('view.import'));
+  const openBtn = h('a', { class: 'btn btn-primary btn-sm', href: location.origin + location.pathname }, t('view.open_app'));
+
+  const header = h('header', { class: 'share-view-head' }, [
+    h('div', { class: 'share-view-brand' }, [
+      h('img', { class: 'brand-logo', src: './apitizer_mark.png', alt: '' }),
+      h('span', { class: 'share-view-name' }, 'API-Tizer'),
+      h('span', { class: 'share-badge' }, t('view.badge')),
+    ]),
+    h('div', { class: 'share-view-actions' }, [copyBtn, importBtn, openBtn]),
+  ]);
+
+  const body = h('div', { class: 'share-view-body' });
+  body.appendChild(h('div', { class: 'share-banner' }, t('view.banner')));
+  if (snapshot.title) body.appendChild(h('h1', { class: 'share-view-title' }, snapshot.title));
+  if (createdAt) body.appendChild(h('div', { class: 'share-view-meta muted' }, t('view.shared_on', { date: new Date(createdAt).toLocaleString() })));
+
+  const msgs = h('div', { class: 'share-messages' });
+  for (const tn of (snapshot.turns || [])) msgs.appendChild(renderSharedTurn(tn));
+  body.appendChild(msgs);
+
+  root.append(header, body);
+  window.scrollTo(0, 0);
+}
+
+function renderSharedTurn(tn) {
+  if (tn.kind === 'compaction') {
+    const cb = h('div', { class: 'compaction-body md' });
+    renderResponseHtml(cb, tn.summary || '');
+    return h('div', { class: 'turn compaction-turn' }, [
+      h('div', { class: 'compaction-card' }, [
+        h('div', { class: 'compaction-head' }, [
+          h('span', { class: 'compaction-title' }, t('compaction.card_title', { n: tn.compactedCount || '' })),
+        ]),
+        h('details', { class: 'compaction-details' }, [h('summary', {}, t('compaction.view')), cb]),
+      ]),
+    ]);
+  }
+
+  const bubble = h('div', { class: 'user-bubble' });
+  if (tn.attachments && tn.attachments.length) {
+    const row = h('div', { class: 'bubble-attachments' });
+    for (const a of tn.attachments) {
+      if (a.kind === 'image' && a.dataUrl) {
+        row.appendChild(h('img', { src: a.dataUrl, alt: a.name || '', title: a.name || '' }));
+      } else if (a.kind === 'image') {
+        row.appendChild(h('span', { class: 'bubble-file' }, t('view.image_omitted')));
+      } else {
+        row.appendChild(h('span', { class: 'bubble-file' }, (a.mime === 'application/pdf' ? '\ud83d\udcd5 ' : '\ud83d\udcc4 ') + (a.name || '')));
+      }
+    }
+    bubble.appendChild(row);
+  }
+  if (tn.user) bubble.appendChild(document.createTextNode(tn.user));
+  const userRow = h('div', { class: 'user-row' }, [h('div', { class: 'user-wrap' }, [bubble])]);
+
+  const cards = [];
+  for (const ans of (tn.answers || [])) cards.push(sharedAnswerCard(ans, false));
+  if (tn.master && (tn.master.text || tn.master.error)) cards.push(sharedAnswerCard(tn.master, true));
+  if (tn.crossCheck && tn.crossCheck.text) cards.push(sharedCrossCard(tn.crossCheck));
+
+  return h('div', { class: 'turn' }, [userRow, h('div', { class: 'share-answers' }, cards)]);
+}
+
+function sharedAnswerCard(ans, isMaster) {
+  const meta = MODEL_META[ans.type] || MODEL_META.openai;
+  const body = h('div', { class: 'card-body md' });
+  if (ans.status === 'error') {
+    body.appendChild(h('div', { class: 'resp-error' }, '\u26a0 ' + (ans.error || t('common.error'))));
+  } else {
+    renderResponseHtml(body, ans.text || '');
+    if (ans.citations && ans.citations.length) renderCitations(body, ans.citations);
+  }
+  let badge = null;
+  if (isMaster) {
+    const v = masterVerdict({ master: { status: 'done', text: ans.text || '' } });
+    if (v) badge = h('span', { class: 'dissent-badge ' + (v.state === 'dissent' ? 'is-dissent' : 'is-consensus') }, v.state === 'dissent' ? t('master.dissent_badge') : t('master.agree_badge'));
+  }
+  const isDissent = !!(badge && badge.classList.contains('is-dissent'));
+  return h('div', { class: 'model-card' + (isMaster ? ' master-card' : '') + (isDissent ? ' has-dissent' : '') }, [
+    h('div', { class: 'card-head' }, [
+      h('span', { class: 'badge', style: `background:${meta.color}` }),
+      isMaster ? h('span', { class: 'crown' }, '\ud83d\udc51') : null,
+      h('span', {}, isMaster ? (t('view.master_label') + (ans.label ? ' \u00b7 ' + ans.label : '')) : (ans.label || '')),
+      ans.model ? h('span', { class: 'model-name', text: ans.model }) : null,
+      badge,
+    ]),
+    body,
+  ]);
+}
+
+function sharedCrossCard(cc) {
+  const body = h('div', { class: 'card-body md' });
+  renderResponseHtml(body, cc.text || '');
+  return h('div', { class: 'model-card crosscheck-card' }, [
+    h('div', { class: 'card-head' }, [
+      h('span', {}, t('view.crosscheck_label')),
+      cc.label ? h('span', { class: 'model-name', text: cc.label }) : null,
+    ]),
+    body,
+  ]);
+}
+
+// Markdown of a shared snapshot (the viewer's "copy" button). Mirrors
+// buildMarkdownExport but reads the snapshot shape instead of live turns.
+function buildSnapshotMarkdown(snapshot) {
+  const lines = [];
+  lines.push(t('export.title', { title: snapshot.title || t('chat.untitled_export') }));
+  lines.push('');
+  for (const tn of (snapshot.turns || [])) {
+    if (tn.kind === 'compaction') {
+      lines.push(t('export.compaction', { n: tn.compactedCount || '' }));
+      lines.push(tn.summary || '');
+      lines.push(''); lines.push('---'); lines.push('');
+      continue;
+    }
+    lines.push(t('export.question'));
+    if (tn.attachments && tn.attachments.length) {
+      lines.push(t('export.attach', { names: tn.attachments.map((a) => a.name).join(', ') }));
+      lines.push('');
+    }
+    lines.push(tn.user || t('block.attach_only'));
+    lines.push('');
+    for (const ans of (tn.answers || [])) {
+      lines.push(`### \ud83e\udd16 ${ans.label} (${ans.model})`);
+      lines.push(ans.status === 'error' ? `> \u26a0 ${ans.error || t('common.error')}` : (ans.text || ''));
+      lines.push('');
+    }
+    if (tn.master && tn.master.text) {
+      lines.push(t('export.master', { label: tn.master.label ? ` \u00b7 ${tn.master.label}` : '' }));
+      lines.push(tn.master.text);
+      lines.push('');
+    }
+    if (tn.crossCheck && tn.crossCheck.text) {
+      lines.push(t('export.crosscheck', { label: tn.crossCheck.label ? ` \u00b7 ${tn.crossCheck.label}` : '' }));
+      lines.push(tn.crossCheck.text);
+      lines.push('');
+    }
+    lines.push('---'); lines.push('');
+  }
+  return lines.join('\n');
+}
+
+// Import ("continue in my account"): stash the decrypted snapshot in this tab and
+// reload into the normal app (login gate if needed). bootAppData picks it up.
+const SHARE_IMPORT_KEY = 'apitizer.pendingShareImport';
+function stashImportAndOpen(snapshot) {
+  try { sessionStorage.setItem(SHARE_IMPORT_KEY, JSON.stringify(snapshot)); } catch { /* quota — skip */ }
+  location.href = location.origin + location.pathname;
+}
+
+// After login, turn any stashed shared snapshot into a real (owned, encrypted,
+// syncable) chat. Returns the new chatId, or null if there was nothing to import.
+async function maybeImportPendingShare() {
+  let raw = null;
+  try { raw = sessionStorage.getItem(SHARE_IMPORT_KEY); } catch { /* ignore */ }
+  if (!raw) return null;
+  try { sessionStorage.removeItem(SHARE_IMPORT_KEY); } catch { /* ignore */ }
+  let snapshot;
+  try { snapshot = JSON.parse(raw); } catch { return null; }
+  if (!snapshot || snapshot.v !== 1 || !Array.isArray(snapshot.turns)) return null;
+  try {
+    const chatId = await importSharedSnapshot(snapshot);
+    showInlineNotice(t('share.imported'));
+    return chatId;
+  } catch { return null; }
+}
+
+async function importSharedSnapshot(snapshot) {
+  const title = (snapshot.title || t('chat.default_title')).slice(0, 120);
+  const chat = await createChat(session.id, session.key, title);
+  // Order preserved and kept strictly in the past so a later real send sorts after.
+  let stamp = Date.now() - (snapshot.turns.length + 1);
+  for (const stn of snapshot.turns) {
+    const createdAt = ++stamp;
+    if (stn.kind === 'compaction') {
+      await addTurn(session.key, { id: uid(), chatId: chat.id, createdAt, kind: 'compaction', summary: stn.summary || '', compactedCount: stn.compactedCount || 0, coversUpTo: createdAt }, session.id);
+      continue;
+    }
+    const modelIds = [];
+    const models = {};
+    const responses = {};
+    (stn.answers || []).forEach((ans, i) => {
+      const id = 's' + i;
+      modelIds.push(id);
+      models[id] = { id, label: ans.label || id, model: ans.model || '', type: MODEL_META[ans.type] ? ans.type : 'openai', vision: false };
+      responses[id] = ans.status === 'error'
+        ? { status: 'error', error: ans.error || t('common.error') }
+        : { status: 'done', text: ans.text || '', ...(ans.citations ? { citations: ans.citations } : {}) };
+    });
+    let master = null, masterId = null, masterEnabled = false;
+    if (stn.master && (stn.master.text || stn.master.error)) {
+      masterId = 'sm'; masterEnabled = true;
+      models[masterId] = { id: masterId, label: stn.master.label || 'Master', model: '', type: MODEL_META[stn.master.type] ? stn.master.type : 'openai', vision: false };
+      master = stn.master.status === 'error'
+        ? { status: 'error', error: stn.master.error || t('common.error'), by: masterId }
+        : { status: 'done', text: stn.master.text || '', by: masterId };
+    }
+    let crossCheck = null;
+    if (stn.crossCheck && stn.crossCheck.text) {
+      models.scc = { id: 'scc', label: stn.crossCheck.label || '', model: '', type: 'openai', vision: false };
+      crossCheck = { status: 'done', text: stn.crossCheck.text, by: 'scc' };
+    }
+    const attachments = (stn.attachments || []).map((a) => ({ name: a.name || '', kind: a.kind || 'file', mime: a.mime || '', ...(a.dataUrl ? { dataUrl: a.dataUrl } : {}) }));
+    await addTurn(session.key, {
+      id: uid(), chatId: chat.id, createdAt,
+      user: stn.user || '', attachments,
+      modelIds, models, responses,
+      masterEnabled, masterId, master, crossCheck,
+    }, session.id);
+  }
+  chats.unshift(chat);
+  scheduleSync();
+  return chat.id;
+}
+
 
 // =====================================================================
 //  Settings modal

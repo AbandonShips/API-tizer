@@ -32,7 +32,11 @@
    > ```bash
    > wrangler d1 execute api-tizer-sync --remote --file=./migrations/0001_add_auth_changed_at.sql
    > ```
-   > 새 DB에 `schema.sql`을 처음 적용하는 경우에는 별도 마이그레이션이 필요 없습니다.
+   > 공유 링크(읽기 전용) 기능을 쓰려면 `shares` 테이블도 한 번 추가해야 합니다.
+   > ```bash
+   > wrangler d1 execute api-tizer-sync --remote --file=./migrations/0002_add_shares.sql
+   > ```
+   > 새 DB에 `schema.sql`을 처음 적용하는 경우에는 위 마이그레이션이 이미 포함되어 있어 별도 실행이 필요 없습니다.
 
 3. **세션 토큰 서명용 비밀키 등록** (길고 무작위한 문자열)
    ```bash
@@ -82,6 +86,10 @@ wrangler dev --remote
 | POST | `/api/auth/change` | (인증 필요) 비밀번호 변경 — Key A/Key B 재발급, 서버 데이터 초기화, 이전 토큰 무효화 |
 | GET | `/api/sync/pull?since=<ms>` | 마지막 동기화 이후 변경분만 내려받기 |
 | POST | `/api/sync/push` | 로컬 변경분 업로드 (서버 시간 기준 last-write-wins) |
+| POST | `/api/share/create` | (인증 필요) 읽기 전용 공유 스냅샷 발행 — `{iv, ct}` 암호문만 저장, `{id, expires_at}` 반환 |
+| GET | `/api/share/get?id=<id>` | **무인증** 공개 읽기 — 공유 암호문 조회 (복호화 키는 링크 프래그먼트에만 존재). 만료 시 410 |
+
+> **공유 링크(shares)** 는 영지식을 유지합니다: 공유마다 새로 만든 AES 키는 **링크의 URL 프래그먼트(`#`)** 에만 담기고 서버로 전송되지 않으므로, 서버에는 열 수 없는 `iv+ct` 스냅샷만 남습니다. 제목·날짜·메시지는 모두 `ct` 안에 암호화됩니다. 공유는 **7일 후 자동 만료**되며, `wrangler.toml` 의 Cron 트리거가 매일 만료 행을 정리합니다(읽기 시에도 지연 삭제).
 
 ## 보안 메모
 

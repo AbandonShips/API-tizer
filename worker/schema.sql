@@ -29,3 +29,20 @@ CREATE TABLE IF NOT EXISTS items (
 
 -- The delta-sync hot path: "give me everything for this user changed since T".
 CREATE INDEX IF NOT EXISTS idx_items_user_updated ON items(username, updated_at);
+
+-- Public read-only share links (ChatGPT/Gemini-style). Same zero-knowledge rule:
+-- the decryption key lives ONLY in the link's URL fragment (#), never reaches the
+-- server, so `iv`+`ct` are an opaque snapshot the server cannot read. Everything
+-- human-readable (title, date, messages) is encrypted INSIDE `ct` — the row keeps
+-- only routing metadata. Shares are frozen snapshots and auto-expire.
+CREATE TABLE IF NOT EXISTS shares (
+  id          TEXT    PRIMARY KEY,      -- random public share id (URL-safe)
+  username    TEXT    NOT NULL,         -- owner (server already knows it; NOT content metadata)
+  created_at  INTEGER NOT NULL,         -- server time the share was created (NOT the conversation date)
+  expires_at  INTEGER NOT NULL,         -- created_at + TTL; reads past this are rejected
+  iv          TEXT    NOT NULL,         -- AES-GCM envelope; the fresh per-share key is never sent here
+  ct          TEXT    NOT NULL          -- opaque ciphertext snapshot (title/date/messages all inside)
+);
+
+-- Cron cleanup path: "delete everything already expired".
+CREATE INDEX IF NOT EXISTS idx_shares_expires ON shares(expires_at);
