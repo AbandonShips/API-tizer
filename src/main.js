@@ -1021,9 +1021,17 @@ async function bootAppData() {
   chats = await listChats(session.id, session.key);
   const importedId = await maybeImportPendingShare();
   renderChatList();
-  if (importedId) await openChat(importedId);
-  else if (chats.length) await openChat(chats[0].id);
-  else { renderChatTitle(); renderMessages(); }
+  // On fresh login, land on the empty "new chat" page instead of auto-opening the
+  // first (pinned) chat. A pending share import still opens its imported chat.
+  if (importedId) {
+    await openChat(importedId);
+  } else {
+    renderChatTitle();
+    renderMessages();
+    // On mobile, reveal the chat list once so returning users see their history
+    // lives in the drawer (on desktop the sidebar is always visible).
+    if (chats.length && isMobileLayout()) openDrawer();
+  }
   startIdleWatch();
 }
 

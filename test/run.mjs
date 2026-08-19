@@ -27,6 +27,8 @@ function eqJSON(actual, expected, msg) {
 eqJSON(priceFor('gemini-3.5-flash-lite'), { in: 0.30, out: 2.50 }, 'gemini-3.5-flash-lite must precede gemini-3.5-flash');
 eqJSON(priceFor('gemini-3.5-flash'), { in: 1.50, out: 9.00 }, 'gemini-3.5-flash price');
 eqJSON(priceFor('gemini-3.6-flash'), { in: 1.50, out: 7.50 }, 'gemini-3.6-flash price');
+eqJSON(priceFor('gemini-3.7-flash'), { in: 1.50, out: 7.50 }, 'gemini-3.7-flash must precede the generic gemini flash fallback');
+eqJSON(priceFor('grok-4.6'), { in: 2.00, out: 6.00 }, 'grok-4.6 must precede the generic grok-4 pattern');
 eqJSON(priceFor('gpt-5.4-mini'), { in: 0.75, out: 4.50 }, 'gpt-5.4-mini price');
 ok(priceFor('totally-unknown-model') === null, 'unknown model → null price');
 

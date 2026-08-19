@@ -31,6 +31,7 @@ export const MODEL_PRESETS = {
     { model: 'claude-haiku-4-5', label: 'Claude Haiku 4.5', priceIn: 1, priceOut: 5, vision: true },
   ],
   gemini: [
+    { model: 'gemini-3.7-flash', label: 'Gemini 3.7 Flash', priceIn: 1.5, priceOut: 7.5, vision: true },
     { model: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash', priceIn: 1.5, priceOut: 7.5, vision: true },
     { model: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash', priceIn: 1.5, priceOut: 9, vision: true },
     { model: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash-Lite', priceIn: 0.3, priceOut: 2.5, vision: true },
@@ -42,6 +43,7 @@ export const MODEL_PRESETS = {
     { model: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash-Lite', priceIn: 0.1, priceOut: 0.4, vision: true },
   ],
   grok: [
+    { model: 'grok-4.6', label: 'Grok 4.6', priceIn: 2, priceOut: 6, vision: true },
     { model: 'grok-4.5', label: 'Grok 4.5', priceIn: 2, priceOut: 6, vision: true },
     { model: 'grok-4.3', label: 'Grok 4.3', priceIn: 1.25, priceOut: 2.5, vision: true },
   ],
@@ -68,8 +70,8 @@ export function defaultSettings() {
     models: [
       { id: 'openai', type: 'openai', label: 'ChatGPT', apiKey: '', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.6-luna', enabled: true, vision: true, priceIn: 1, priceOut: 6 },
       { id: 'anthropic', type: 'anthropic', label: 'Claude', apiKey: '', baseUrl: 'https://api.anthropic.com/v1', model: 'claude-sonnet-5', enabled: true, vision: true, priceIn: 3, priceOut: 15 },
-      { id: 'gemini', type: 'gemini', label: 'Gemini', apiKey: '', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-3.6-flash', enabled: true, vision: true, priceIn: 1.5, priceOut: 7.5 },
-      { id: 'grok', type: 'grok', label: 'Grok', apiKey: '', baseUrl: 'https://api.x.ai/v1', model: 'grok-4.3', enabled: true, vision: true, priceIn: 1.25, priceOut: 2.5 },
+      { id: 'gemini', type: 'gemini', label: 'Gemini', apiKey: '', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-3.7-flash', enabled: true, vision: true, priceIn: 1.5, priceOut: 7.5 },
+      { id: 'grok', type: 'grok', label: 'Grok', apiKey: '', baseUrl: 'https://api.x.ai/v1', model: 'grok-4.6', enabled: true, vision: true, priceIn: 2, priceOut: 6 },
     ],
   };
 }
@@ -148,6 +150,7 @@ const PRICING = [
   [/claude.*opus|opus/i, 5.00, 25.00],
   [/claude.*sonnet|claude-3-7|sonnet/i, 3.00, 15.00],
   // Gemini
+  [/gemini-3\.7-flash/i, 1.50, 7.50],
   [/gemini-3\.6-flash/i, 1.50, 7.50],
   [/gemini-3\.5-flash-lite/i, 0.30, 2.50],
   [/gemini-3\.5-flash/i, 1.50, 9.00],
@@ -161,6 +164,7 @@ const PRICING = [
   [/gemini.*flash/i, 1.50, 9.00],
   [/gemini.*pro/i, 1.25, 10.00],
   // xAI Grok
+  [/grok-4\.6/i, 2.00, 6.00],
   [/grok-4\.5/i, 2.00, 6.00],
   [/grok-4\.3|grok-4|grok-3/i, 1.25, 2.50],
   [/grok-2|grok/i, 2.00, 10.00],
