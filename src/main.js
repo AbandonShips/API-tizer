@@ -2217,7 +2217,10 @@ async function runCrossCheck(turn, aggregator, selectedModels, signal) {
   const tset = settings.timeoutMs;
   const timeoutMs = tset > 0 ? tset : 0;
   let ccTimeout = null;
-  if (timeoutMs > 0) {
+  // Idle timeout: re-armed on any stream activity (incl. reasoning) so a slow aggregator isn't cut off.
+  const armCcTimeout = () => {
+    if (timeoutMs <= 0) return;
+    if (ccTimeout) clearTimeout(ccTimeout);
     ccTimeout = setTimeout(() => {
       if (cc.status === 'streaming' && !cc.text) {
         cc.status = 'error';
@@ -2242,7 +2245,8 @@ async function runCrossCheck(turn, aggregator, selectedModels, signal) {
         }
       }
     }, timeoutMs);
-  }
+  };
+  armCcTimeout();
 
   let block = `${t('block.question')}\n${turn.user}\n\n${t('block.each_model_answer')}\n`;
   for (const m of selectedModels) {
@@ -2264,6 +2268,9 @@ async function runCrossCheck(turn, aggregator, selectedModels, signal) {
           if (turn.crossCheck !== cc || cc.status !== 'streaming' || cc.text) return;
           const b = document.getElementById(`body-${turn.id}-crosscheck`);
           if (b) { b.classList.remove('streaming'); b.innerHTML = `<span class="card-status status-wait">${escapeText(t('status.retry_busy', { delay: Math.round(delay / 1000), attempt }))}</span>`; }
+        },
+        onActivity: () => {
+          if (turn.crossCheck === cc && cc.status === 'streaming' && !cc.text) armCcTimeout();
         },
         onChunk: (_c, full) => {
           if (turn.crossCheck !== cc || cc.status !== 'streaming') return; // superseded by a newer run
@@ -3161,11 +3168,15 @@ async function runModel(turn, model, signal) {
   refreshCard(turn, model.id, resp);
   refreshMasterProgress(turn);
 
-  // 모델 응답 타임아웃 (model response timeout)
+  // 모델 응답 타임아웃 (model response timeout) — idle-based: re-armed on any stream
+  // activity (including a reasoning model's "thinking" events before visible text), so a
+  // slow reasoning model isn't cut off mid-thought. Fires only after timeoutMs of silence.
   const tmo = settings.timeoutMs;
   const timeoutMs = tmo > 0 ? tmo : 0;
   let responseTimeout = null;
-  if (timeoutMs > 0) {
+  const armResponseTimeout = () => {
+    if (timeoutMs <= 0) return;
+    if (responseTimeout) clearTimeout(responseTimeout);
     responseTimeout = setTimeout(() => {
       if (resp.status === 'streaming' && !resp.text) {
         resp.status = 'error';
@@ -3175,7 +3186,8 @@ async function runModel(turn, model, signal) {
         updateTurn(session.key, turn, session.id).catch(() => {});
       }
     }, timeoutMs);
-  }
+  };
+  armResponseTimeout();
 
   try {
     const messages = buildHistory(model, turn);
@@ -3194,6 +3206,11 @@ async function runModel(turn, model, signal) {
         if (b) { b.classList.remove('streaming'); b.innerHTML = `<span class="card-status status-wait">${escapeText(t('status.retry_busy', { delay: Math.round(delay / 1000), attempt }))}</span>`; }
       },
       onCitations: model.type === 'local' ? undefined : (urls) => { if (resp._gen === respGen) resp.citations = urls; },
+      onActivity: () => {
+        // Reasoning/keepalive events keep the model "alive" so the idle timeout doesn't fire
+        // while it's thinking but hasn't emitted visible text yet.
+        if (resp._gen === respGen && resp.status === 'streaming' && !resp.text) armResponseTimeout();
+      },
       onChunk: (_chunk, fullText) => {
         if (resp._gen !== respGen || resp.status !== 'streaming') return;
         if (responseTimeout) {
@@ -3318,11 +3335,14 @@ async function runMaster(turn, master, modelsForBlock, signal) {
   const startedAt = performance.now();
   refreshCard(turn, 'master', turn.master);
 
-  // 마스터 요약 타임아웃 (master summary timeout)
+  // 마스터 요약 타임아웃 (master summary timeout) — idle-based: re-armed on any stream
+  // activity (incl. reasoning) so a slow aggregator model isn't cut off mid-thought.
   const tmo = settings.timeoutMs;
   const timeoutMs = tmo > 0 ? tmo : 0;
   let masterTimeout = null;
-  if (timeoutMs > 0) {
+  const armMasterTimeout = () => {
+    if (timeoutMs <= 0) return;
+    if (masterTimeout) clearTimeout(masterTimeout);
     masterTimeout = setTimeout(() => {
       if (turn.master.status === 'streaming' && !turn.master.text) {
         turn.master.status = 'error';
@@ -3355,7 +3375,8 @@ async function runMaster(turn, master, modelsForBlock, signal) {
         }
       }
     }, timeoutMs);
-  }
+  };
+  armMasterTimeout();
 
   // Aggregation input: optional previous official synthesis + this question + this-turn answers.
   const prevMaster = latestSuccessfulMasterBefore(turn);
@@ -3389,6 +3410,9 @@ async function runMaster(turn, master, modelsForBlock, signal) {
           if (turn._masterGen !== masterGen || turn.master.status !== 'streaming' || turn.master.text) return;
           const b = document.getElementById(`body-${turn.id}-master`);
           if (b) { b.classList.remove('streaming'); b.innerHTML = `<span class="card-status status-wait">${escapeText(t('status.retry_busy', { delay: Math.round(delay / 1000), attempt }))}</span>`; }
+        },
+        onActivity: () => {
+          if (turn._masterGen === masterGen && turn.master.status === 'streaming' && !turn.master.text) armMasterTimeout();
         },
         onChunk: (_c, fullText) => {
           if (turn._masterGen !== masterGen || turn.master.status !== 'streaming') return;

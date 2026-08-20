@@ -57,7 +57,7 @@ export function defaultSettings() {
   return {
     customPrompt: '',
     richStyle: true,         // inject rich formatting instruction (emojis, tables, structure) so API responses feel closer to web ChatGPT
-    timeoutMs: 60000,        // timeout for individual model responses and master summary (in ms). 0 or falsy to disable.
+    timeoutMs: 120000,       // idle timeout for model responses & master summary (ms): the per-model timer resets on stream activity (incl. reasoning), so slow reasoning models aren't cut off. 0 or falsy to disable.
     maxTokens: 8192,         // max output tokens per response. Anthropic requires an explicit cap (was hardcoded 4096, which truncated long master summaries); other providers keep their own default.
     masterId: 'openai',
     masterEnabled: false,

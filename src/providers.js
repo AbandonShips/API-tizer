@@ -62,7 +62,7 @@ function openAIContent(m) {
   return parts;
 }
 
-async function streamOpenAICompatible(model, messages, { signal, onChunk, onCitations }) {
+async function streamOpenAICompatible(model, messages, { signal, onChunk, onCitations, onActivity }) {
   const base = (model.baseUrl || '').replace(/\/$/, '');
   const body = {
     model: model.model,
@@ -83,6 +83,7 @@ async function streamOpenAICompatible(model, messages, { signal, onChunk, onCita
   let full = '';
   let citations = null;
   for await (const line of sseLines(res)) {
+    onActivity?.();
     if (!line.startsWith('data:')) continue;
     const data = line.slice(5).trim();
     if (data === '[DONE]') break;
@@ -123,7 +124,7 @@ function responsesInput(messages) {
   return items;
 }
 
-async function streamOpenAIResponses(model, messages, { signal, onChunk, onCitations }) {
+async function streamOpenAIResponses(model, messages, { signal, onChunk, onCitations, onActivity }) {
   const base = (model.baseUrl || 'https://api.openai.com/v1').replace(/\/$/, '');
   const instructions = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n');
   const res = await fetch(`${base}/responses`, {
@@ -151,6 +152,7 @@ async function streamOpenAIResponses(model, messages, { signal, onChunk, onCitat
     if (url) cites.push({ url, title: ann.title || '' });
   };
   for await (const line of sseLines(res)) {
+    onActivity?.();
     if (!line.startsWith('data:')) continue;
     const data = line.slice(5).trim();
     if (!data || data === '[DONE]') continue;
@@ -193,7 +195,7 @@ function anthropicContent(m) {
   return parts;
 }
 
-async function streamAnthropic(model, messages, { signal, onChunk, onCitations, webSearch, maxTokens }) {
+async function streamAnthropic(model, messages, { signal, onChunk, onCitations, webSearch, maxTokens, onActivity }) {
   const base = (model.baseUrl || 'https://api.anthropic.com/v1').replace(/\/$/, '');
   const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n');
   const convo = messages
@@ -226,6 +228,7 @@ async function streamAnthropic(model, messages, { signal, onChunk, onCitations, 
   let full = '';
   const cites = [];
   for await (const line of sseLines(res)) {
+    onActivity?.();
     if (!line.startsWith('data:')) continue;
     const data = line.slice(5).trim();
     if (!data) continue;
@@ -265,7 +268,7 @@ function geminiParts(m) {
   return parts.length ? parts : [{ text: '' }];
 }
 
-async function streamGemini(model, messages, { signal, onChunk, onCitations, webSearch }) {
+async function streamGemini(model, messages, { signal, onChunk, onCitations, webSearch, onActivity }) {
   const base = (model.baseUrl || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/$/, '');
   const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n');
   const contents = messages
@@ -291,6 +294,7 @@ async function streamGemini(model, messages, { signal, onChunk, onCitations, web
   let full = '';
   let citations = null;
   for await (const line of sseLines(res)) {
+    onActivity?.();
     if (!line.startsWith('data:')) continue;
     const data = line.slice(5).trim();
     if (!data) continue;
