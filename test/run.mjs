@@ -27,9 +27,16 @@ function eqJSON(actual, expected, msg) {
 eqJSON(priceFor('gemini-3.5-flash-lite'), { in: 0.30, out: 2.50 }, 'gemini-3.5-flash-lite must precede gemini-3.5-flash');
 eqJSON(priceFor('gemini-3.5-flash'), { in: 1.50, out: 9.00 }, 'gemini-3.5-flash price');
 eqJSON(priceFor('gemini-3.6-flash'), { in: 1.50, out: 7.50 }, 'gemini-3.6-flash price');
-eqJSON(priceFor('gemini-3.7-flash'), { in: 1.50, out: 7.50 }, 'gemini-3.7-flash must precede the generic gemini flash fallback');
+eqJSON(priceFor('gemini-3.7-flash'), { in: 1.50, out: 7.50 }, 'gemini-3.7-flash price');
+eqJSON(priceFor('gemini-3.8-flash'), { in: 1.50, out: 7.50 }, 'gemini-3.8-flash must precede the generic gemini flash fallback');
 eqJSON(priceFor('grok-4.6'), { in: 2.00, out: 6.00 }, 'grok-4.6 must precede the generic grok-4 pattern');
 eqJSON(priceFor('gpt-5.4-mini'), { in: 0.75, out: 4.50 }, 'gpt-5.4-mini price');
+eqJSON(priceFor('gpt-6-astra'), { in: 10.00, out: 50.00 }, 'gpt-6-astra price');
+eqJSON(priceFor('gpt-5.6-terra'), { in: 2.00, out: 12.00 }, 'gpt-5.6-terra price');
+eqJSON(priceFor('gpt-5.6-luna'), { in: 0.20, out: 1.20 }, 'gpt-5.6-luna price');
+eqJSON(priceFor('claude-opus-5'), { in: 5.00, out: 25.00 }, 'claude-opus-5 price');
+eqJSON(priceFor('claude-fable-5-1'), { in: 10.00, out: 50.00 }, 'claude-fable-5-1 price');
+eqJSON(priceFor('claude-sonnet-5'), { in: 2.00, out: 10.00 }, 'claude-sonnet-5 must precede the generic sonnet fallback');
 ok(priceFor('totally-unknown-model') === null, 'unknown model → null price');
 
 // effectivePrice: an object override wins over the name table

@@ -62,13 +62,19 @@ function openAIContent(m) {
   return parts;
 }
 
-async function streamOpenAICompatible(model, messages, { signal, onChunk, onCitations, onActivity }) {
+async function streamOpenAICompatible(model, messages, { signal, onChunk, onCitations, onActivity, webSearch }) {
   const base = (model.baseUrl || '').replace(/\/$/, '');
   const body = {
     model: model.model,
     messages: messages.map((m) => ({ role: m.role, content: openAIContent(m) })),
     stream: true,
   };
+  // xAI/Grok Live Search: enable native web+X search (model decides when) and ask for
+  // citations. This is xAI's documented search_parameters on /chat/completions — not the
+  // OpenAI Responses `web_search` tool, which xAI ignores and streams back empty.
+  if (webSearch && model.type === 'grok') {
+    body.search_parameters = { mode: 'auto', return_citations: true };
+  }
   const res = await fetch(`${base}/chat/completions`, {
     method: 'POST',
     signal,
@@ -325,10 +331,13 @@ function streamChatOnce(model, messages, opts = {}) {
     case 'anthropic': return streamAnthropic(model, messages, opts);
     case 'gemini': return streamGemini(model, messages, opts);
     case 'openai':
-    case 'grok':
-      // OpenAI & xAI/Grok web search both run through the Responses API.
-      // (Grok's old Chat Completions `search_parameters` was deprecated → HTTP 410.)
+      // OpenAI web search runs through the Responses API (web_search tool).
       if (opts.webSearch) return streamOpenAIResponses(model, messages, opts);
+      return streamOpenAICompatible(model, messages, opts);
+    case 'grok':
+      // xAI is OpenAI-compatible; web search uses its native search_parameters on
+      // /chat/completions (handled in streamOpenAICompatible), which returns citations
+      // inline. Routing Grok through the OpenAI Responses `web_search` tool came back empty.
       return streamOpenAICompatible(model, messages, opts);
     case 'local':
     default: return streamOpenAICompatible(model, messages, opts);
