@@ -1,5 +1,5 @@
 import {
-  defaultSettings, normalizeSettings, MODEL_META, MAX_LOCAL,
+  defaultSettings, normalizeSettings, MODEL_META, MAX_LOCAL, APP_VERSION,
   MODEL_PRESETS, modelPresetFor,
   localCount, makeLocalModel, enabledModels,
   estimateTokens, estimateCost, effectivePrice, addUsage, getUsage, resetUsage,
@@ -545,6 +545,8 @@ function setupTooltips() {
 //  Auth (login / signup gate)
 // =====================================================================
 function initAuth() {
+  const verEl = $('#authVersion');
+  if (verEl) verEl.textContent = APP_VERSION;
   // Web Crypto (encryption) requires a secure context: localhost or HTTPS.
   // Opening the app via a plain-HTTP LAN address would silently break login,
   // so fail loudly with guidance instead.

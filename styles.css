@@ -101,6 +101,7 @@ body.theme-light .auth-screen {
 .auth-switch { text-align: center; color: var(--muted); font-size: 13px; margin: 2px 0 0; }
 .auth-switch a { color: var(--accent); text-decoration: none; font-weight: 600; }
 .auth-warn { text-align: center; color: #ffce54; font-size: 11px; margin: 6px 0 0; opacity: 0.85; }
+.auth-version { text-align: center; color: var(--muted); font-size: 11px; margin: 12px 0 -2px; opacity: 0.6; letter-spacing: 0.02em; }
 
 /* language selector — login screen (pill buttons) + settings (reuses .seg) */
 .lang-select { display: flex; gap: 8px; justify-content: center; margin-top: 14px; }

@@ -2,6 +2,10 @@
 // each user's settings with their password-derived key (see crypto.js).
 import { t } from './i18n.js';
 
+// App version — shown on the login screen (index.html #authVersion). Keep in sync with
+// the README "변경 사항" changelog heading.
+export const APP_VERSION = 'v1.5.4';
+
 export const MODEL_META = {
   openai: { label: 'ChatGPT', color: 'var(--openai)', apiConsoleUrl: 'https://platform.openai.com/api-keys' },
   anthropic: { label: 'Claude', color: 'var(--claude)', apiConsoleUrl: 'https://console.anthropic.com/settings/keys' },

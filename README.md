@@ -1,6 +1,6 @@
 # ![API-tizer 로고](./favicon.png) API-Tizer
 
-**현재 버전: v1.5.3**
+**현재 버전: v1.5.4**
 
 ChatGPT · Claude · Gemini · Grok · 로컬 OpenAI 호환 모델을 한 화면에서 동시에 호출하고 비교하는 개인용 멀티 AI 콘솔입니다.
 
@@ -55,6 +55,11 @@ ChatGPT · Claude · Gemini · Grok · 로컬 OpenAI 호환 모델을 한 화면
 
 ## 변경 사항
 
+### v1.5.4
+
+- **로그인 화면에 현재 버전을 표시합니다.** 접속했을 때 지금 실행 중인 버전(예: `v1.5.4`)을 로그인 카드 하단에서 바로 확인할 수 있어, 브라우저가 예전 버전을 캐시하고 있는지 등을 쉽게 알 수 있습니다.
+- **Grok 웹 검색을 xAI의 새 Agent Tools API로 전환했습니다.** v1.5.3에서 쓰던 `search_parameters`(Live Search)가 폐기되어, 웹 검색을 켠 Grok 호출이 `HTTP 410`으로 실패했습니다. 이제 Responses 엔드포인트 + `web_search` 툴로 호출하고, 혹시 검색 경로가 비면 자동으로 일반 채팅으로 폴백해 **최소한 답변은 나오도록** 했습니다.
+
 ### v1.5.3
 
 - **각 제공자의 최신 모델을 조사해 반영했습니다.** 공식 문서 기준으로 새 모델을 프리셋·기본값·단가 표에 추가하고, 바뀌어있던 단가를 최신화했습니다.
@@ -62,7 +67,7 @@ ChatGPT · Claude · Gemini · Grok · 로컬 OpenAI 호환 모델을 한 화면
   - **GPT-6 Astra**(`gpt-6-astra`) — OpenAI 신규 플래그십 모델을 추가했습니다(입력 $10 / 출력 $50).
   - **Claude Opus 5**(`claude-opus-5`, 입력 $5 / 출력 $25)·**Claude Fable 5.1**(`claude-fable-5-1`, 입력 $10 / 출력 $50) — Anthropic 신규 모델을 추가했습니다.
   - **변경된 단가를 최신화**했습니다: GPT-5.6 Terra($2.5/$15→$2/$12), GPT-5.6 Luna($1/$6→$0.2/$1.2), Claude Sonnet 5($3/$15→$2/$10).
-- **Grok이 계속 “응답 없음”으로 끝나던 문제를 고쳌습니다.** 웹 검색이 켜져 있을 때(기본값) Grok을 OpenAI Responses API로 호출하던 것이 원인으로, xAI에서 빈 응답이 돌아왔습니다. 이제 xAI 공식 방식인 `/chat/completions`의 `search_parameters`(라이브 검색)로 호출해 **정상적으로 답변과 출처가 나오도록** 고쳌습니다.
+- **Grok이 계속 “응답 없음”으로 끝나던 문제를 고쳤습니다.** 웹 검색이 켜져 있을 때(기본값) Grok을 OpenAI Responses API로 호출하던 것이 원인으로, xAI에서 빈 응답이 돌아왔습니다. 이제 xAI 공식 방식인 `/chat/completions`의 `search_parameters`(라이브 검색)로 호출해 **정상적으로 답변과 출처가 나오도록** 고쳤습니다.
 
 ### v1.5.2
 
