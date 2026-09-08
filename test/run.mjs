@@ -14,6 +14,7 @@ globalThis.navigator ??= { language: 'ko' };
 
 import { priceFor, effectivePrice, estimateCost, estimateTokens, checkPricingConsistency } from '../src/state.js';
 import { masterVerdict, similaritySignal, buildShareSnapshot } from '../src/analysis.js';
+import { errorDetail, isBillingExhausted, isGrokFallbackable } from '../src/providers.js';
 import { renderMarkdown } from '../src/markdown.js';
 
 let passed = 0, failed = 0;
@@ -66,6 +67,25 @@ ok(masterVerdict({ master: { status: 'streaming', text: '### 소수 의견\n없�
 ok(similaritySignal(['hello world', 'hello world']).state === 'agree', 'identical answers → agree');
 ok(similaritySignal(['aaaaaa', 'zzzzzz']).state === 'diverge', 'disjoint answers → diverge');
 ok(similaritySignal(['only one answer']) === null, 'single answer → null (nothing to compare)');
+
+// ---- providers.js: errorDetail (xAI shape has a STRING error, not {message}) ----
+eqJSON(errorDetail(JSON.stringify({ code: 'permission-denied', error: 'Your team T has either used all available credits or reached its monthly spending limit.' })), 'Your team T has either used all available credits or reached its monthly spending limit.', 'xAI string error is extracted (no raw JSON blob)');
+eqJSON(errorDetail(JSON.stringify({ error: { message: 'boom', code: 500 } })), 'boom', 'OpenAI-style {error:{message}} is extracted');
+eqJSON(errorDetail(JSON.stringify({ message: 'm' })), 'm', 'top-level {message} is extracted');
+eqJSON(errorDetail('plain text failure'), 'plain text failure', 'non-JSON body passes through');
+eqJSON(errorDetail(''), '', 'empty body → empty detail');
+
+// ---- providers.js: isBillingExhausted (xAI 403 permission-denied = pay up, not a key bug) ----
+ok(isBillingExhausted(403, 'permission-denied — Your team T has either used all available credits or reached its monthly spending limit.') === true, 'xAI 403 credits message → billing');
+ok(isBillingExhausted(403, 'Incorrect API key provided') === false, 'plain 403 without billing words → not billing');
+ok(isBillingExhausted(402, 'anything') === true, '402 → billing regardless of body');
+ok(isBillingExhausted(500, 'used all available credits') === false, 'billing words on 500 → not billing (status-gated)');
+
+// ---- providers.js: isGrokFallbackable (auth/billing must NOT retry via plain chat) ----
+ok(isGrokFallbackable(new Error('HTTP 403 Forbidden — permission-denied')) === false, 'Grok 403 → no chat-completions fallback');
+ok(isGrokFallbackable(new Error('HTTP 401 Unauthorized — Incorrect API key')) === false, 'Grok 401 → no fallback');
+ok(isGrokFallbackable(new Error('HTTP 410 Gone')) === true, 'Grok 410 (deprecated endpoint) → fallback still allowed');
+ok(isGrokFallbackable(new Error('empty response')) === true, 'empty Responses result → fallback still allowed');
 
 // ---- markdown.js: XSS safety (the renderer escapes everything first) ----
 ok(!renderMarkdown('<script>alert(1)</script>').includes('<script>'), 'raw <script> is escaped');

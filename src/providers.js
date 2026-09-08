@@ -21,14 +21,53 @@ async function* sseLines(response) {
   if (buffer) yield buffer;
 }
 
-async function readError(response) {
+// Parse an HTTP error body into a short human-readable detail. Handles the shapes
+// providers actually return:
+//   OpenAI/Anthropic/Gemini: { error: { message } } (or { message })
+//   xAI Grok auth/billing:   { code, error: "<string>" } — error is a plain string,
+//                             so the old `?.error?.message` lookup missed it and users
+//                             saw the raw JSON blob instead.
+export function errorDetail(bodyText) {
+  if (!bodyText) return '';
+  try {
+    const json = JSON.parse(bodyText);
+    if (typeof json?.error === 'string') return json.error;
+    if (json?.error?.message != null) return String(json.error.message);
+    if (typeof json?.message === 'string') return json.message;
+    return bodyText;
+  } catch { return bodyText; }
+}
+
+// Billing/quota exhaustion is NOT a key or transient problem: xAI reports it as
+// HTTP 402/403 permission-denied ("used all available credits or reached its
+// monthly spending limit"). Detect it so the UI can point at billing instead.
+export function isBillingExhausted(status, detail) {
+  if (status === 402) return true;
+  if (status !== 403) return false;
+  return /permission-denied|used all available credits|spending limit|out of credit|credit balance|insufficient_quota|billing/i.test(detail || '');
+}
+
+// Auth/billing failures must NOT trigger the Grok chat-completions fallback: the
+// second call uses the same key and team balance, so it would fail identically
+// and only add latency. Fall back only for empty responses or transport/endpoint
+// issues (e.g. a deprecated endpoint answering 404/410).
+const NO_GROK_FALLBACK_ERR = /HTTP 40[13]\b|invalid api key|incorrect api key|unauthorized|permission-denied|used all available credits|spending limit/i;
+export function isGrokFallbackable(err) {
+  return !NO_GROK_FALLBACK_ERR.test(String(err?.message || err || ''));
+}
+
+async function readError(response, model) {
   let detail = '';
   try {
     const text = await response.text();
-    try { detail = JSON.parse(text)?.error?.message || JSON.parse(text)?.message || text; }
+    try { detail = errorDetail(text); }
     catch { detail = text; }
   } catch { /* ignore */ }
-  return `HTTP ${response.status} ${response.statusText}${detail ? ' — ' + detail.slice(0, 300) : ''}`;
+  let msg = `HTTP ${response.status} ${response.statusText}${detail ? ' — ' + detail.slice(0, 300) : ''}`;
+  if (isBillingExhausted(response.status, detail)) {
+    msg += ' · ' + (model?.type === 'grok' ? t('ext.billing_grok') : t('ext.billing_generic'));
+  }
+  return msg;
 }
 
 // Split a data URL (data:image/png;base64,XXXX) into mime + base64 payload.
@@ -78,7 +117,7 @@ async function streamOpenAICompatible(model, messages, { signal, onChunk, onCita
     },
     body: JSON.stringify(body),
   });
-  if (!res.ok || !res.body) throw new Error(await readError(res));
+  if (!res.ok || !res.body) throw new Error(await readError(res, model));
 
   let full = '';
   let citations = null;
@@ -142,7 +181,7 @@ async function streamOpenAIResponses(model, messages, { signal, onChunk, onCitat
       stream: true,
     }),
   });
-  if (!res.ok || !res.body) throw new Error(await readError(res));
+  if (!res.ok || !res.body) throw new Error(await readError(res, model));
 
   let full = '';
   const cites = [];
@@ -223,7 +262,7 @@ async function streamAnthropic(model, messages, { signal, onChunk, onCitations, 
     },
     body: JSON.stringify(body),
   });
-  if (!res.ok || !res.body) throw new Error(await readError(res));
+  if (!res.ok || !res.body) throw new Error(await readError(res, model));
 
   let full = '';
   const cites = [];
@@ -289,7 +328,7 @@ async function streamGemini(model, messages, { signal, onChunk, onCitations, web
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!res.ok || !res.body) throw new Error(await readError(res));
+  if (!res.ok || !res.body) throw new Error(await readError(res, model));
 
   let full = '';
   let citations = null;
@@ -325,6 +364,8 @@ async function streamGemini(model, messages, { signal, onChunk, onCitations, web
 // Chat Completions `search_parameters` (Live Search) is now deprecated → HTTP 410. If the
 // web-search attempt yields nothing (or fails before any token streamed), fall back to a
 // plain chat completion so the user still gets an answer instead of "(응답 없음)".
+// Auth/billing failures (401/403, exhausted credits) never fall back — plain chat
+// would fail identically on the same key/balance.
 async function streamGrokWithSearch(model, messages, opts) {
   let emitted = false;
   const guarded = { ...opts, onChunk: (d, f) => { emitted = true; opts.onChunk?.(d, f); } };
@@ -332,7 +373,7 @@ async function streamGrokWithSearch(model, messages, opts) {
     const out = await streamOpenAIResponses(model, messages, guarded);
     if (emitted || (out && out.trim())) return out;
   } catch (e) {
-    if (emitted || opts.signal?.aborted) throw e;
+    if (emitted || opts.signal?.aborted || !isGrokFallbackable(e)) throw e;
   }
   return streamOpenAICompatible(model, messages, opts);
 }
