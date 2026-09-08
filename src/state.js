@@ -4,7 +4,7 @@ import { t } from './i18n.js';
 
 // App version — shown on the login screen (index.html #authVersion). Keep in sync with
 // the README "변경 사항" changelog heading.
-export const APP_VERSION = 'v1.5.4';
+export const APP_VERSION = 'v1.5.5';
 
 export const MODEL_META = {
   openai: { label: 'ChatGPT', color: 'var(--openai)', apiConsoleUrl: 'https://platform.openai.com/api-keys' },

@@ -2248,7 +2248,18 @@ async function runCrossCheck(turn, aggregator, selectedModels, signal) {
       }
     }, timeoutMs);
   };
+  // Idle "unblock" gate (mirrors armCcTimeout) — re-armed on activity/chunk so a slow but actively
+  // streaming aggregator waits for real completion instead of unblocking the caller early.
+  let ccUnblockTimer = null;
+  let resolveCcUnblock = null;
+  const ccUnblockP = timeoutMs > 0 ? new Promise((r) => { resolveCcUnblock = r; }) : null;
+  const armCcUnblock = () => {
+    if (timeoutMs <= 0) return;
+    if (ccUnblockTimer) clearTimeout(ccUnblockTimer);
+    ccUnblockTimer = setTimeout(() => { resolveCcUnblock?.(); }, timeoutMs);
+  };
   armCcTimeout();
+  armCcUnblock();
 
   let block = `${t('block.question')}\n${turn.user}\n\n${t('block.each_model_answer')}\n`;
   for (const m of selectedModels) {
@@ -2272,11 +2283,14 @@ async function runCrossCheck(turn, aggregator, selectedModels, signal) {
           if (b) { b.classList.remove('streaming'); b.innerHTML = `<span class="card-status status-wait">${escapeText(t('status.retry_busy', { delay: Math.round(delay / 1000), attempt }))}</span>`; }
         },
         onActivity: () => {
-          if (turn.crossCheck === cc && cc.status === 'streaming' && !cc.text) armCcTimeout();
+          if (turn.crossCheck !== cc || cc.status !== 'streaming') return;
+          if (!cc.text) armCcTimeout();
+          armCcUnblock();
         },
         onChunk: (_c, full) => {
           if (turn.crossCheck !== cc || cc.status !== 'streaming') return; // superseded by a newer run
           if (ccTimeout) { clearTimeout(ccTimeout); ccTimeout = null; }
+          armCcUnblock();
           cc.text = full;
           const b = document.getElementById(`body-${turn.id}-crosscheck`);
           if (b) { b.classList.add('streaming'); renderResponseHtml(b, full); }
@@ -2292,15 +2306,14 @@ async function runCrossCheck(turn, aggregator, selectedModels, signal) {
         resolve();
       });
     });
-    let raceTimer = null;
-    const timeoutP = timeoutMs > 0 ? new Promise((r) => { raceTimer = setTimeout(r, timeoutMs); }) : Promise.resolve();
-    await Promise.race([wrapped, timeoutP]);
-    if (raceTimer) { clearTimeout(raceTimer); raceTimer = null; }
+    await (ccUnblockP ? Promise.race([wrapped, ccUnblockP]) : wrapped);
+    if (ccUnblockTimer) { clearTimeout(ccUnblockTimer); ccUnblockTimer = null; }
   } catch (err) {
     if (signal.aborted) { cc.status = cc.text ? 'done' : 'error'; cc.error = t('status.aborted'); }
     else { cc.status = 'error'; cc.error = String(err.message || err); }
   } finally {
     if (ccTimeout) { clearTimeout(ccTimeout); ccTimeout = null; }
+    if (ccUnblockTimer) { clearTimeout(ccUnblockTimer); ccUnblockTimer = null; }
   }
   cc.elapsedMs = performance.now() - startedAt;
   cc.completionTokens = estimateTokens(cc.text || '');
@@ -3189,7 +3202,20 @@ async function runModel(turn, model, signal) {
       }
     }, timeoutMs);
   };
+  // Idle "unblock" gate: lets send() proceed to (early/partial) master only after timeoutMs of
+  // SILENCE — re-armed on every activity/chunk below, so a slow but actively streaming model isn't
+  // treated as stalled. (Previously a fixed timer, which popped the "pick another summarizer"
+  // dialog while GPT/Grok were still answering.)
+  let unblockTimer = null;
+  let resolveUnblock = null;
+  const unblockP = timeoutMs > 0 ? new Promise((r) => { resolveUnblock = r; }) : null;
+  const armUnblock = () => {
+    if (timeoutMs <= 0) return;
+    if (unblockTimer) clearTimeout(unblockTimer);
+    unblockTimer = setTimeout(() => { resolveUnblock?.(); }, timeoutMs);
+  };
   armResponseTimeout();
+  armUnblock();
 
   try {
     const messages = buildHistory(model, turn);
@@ -3209,9 +3235,11 @@ async function runModel(turn, model, signal) {
       },
       onCitations: model.type === 'local' ? undefined : (urls) => { if (resp._gen === respGen) resp.citations = urls; },
       onActivity: () => {
-        // Reasoning/keepalive events keep the model "alive" so the idle timeout doesn't fire
-        // while it's thinking but hasn't emitted visible text yet.
-        if (resp._gen === respGen && resp.status === 'streaming' && !resp.text) armResponseTimeout();
+        // Reasoning/keepalive events keep the model "alive" so neither the idle timeout nor the
+        // unblock gate fires while it's thinking/streaming but slow.
+        if (resp._gen !== respGen || resp.status !== 'streaming') return;
+        if (!resp.text) armResponseTimeout();
+        armUnblock();
       },
       onChunk: (_chunk, fullText) => {
         if (resp._gen !== respGen || resp.status !== 'streaming') return;
@@ -3219,6 +3247,7 @@ async function runModel(turn, model, signal) {
           clearTimeout(responseTimeout);
           responseTimeout = null;
         }
+        armUnblock(); // fresh output → push back the idle-unblock clock
         resp.text = fullText;
         const b = document.getElementById(`body-${turn.id}-${model.id}`);
         if (b) { b.classList.add('streaming'); renderResponseHtml(b, fullText); }
@@ -3227,7 +3256,7 @@ async function runModel(turn, model, signal) {
     });
 
     // Wrap streamP so we *always* settle promptly (unblocks send/allSettled) and reliably set 'done' on success.
-    // The separate timeoutP below unblocks even on complete hangs. Late-finishing streams after timeout will
+    // The separate idle unblock gate below unblocks even on complete hangs. Late-finishing streams after timeout will
     // still flip to 'done' and persist the final text (onChunk already updated live text).
     const wrapped = new Promise((resolve) => {
       streamP.then((full) => {
@@ -3262,11 +3291,11 @@ async function runModel(turn, model, signal) {
       });
     });
 
-    // Race to unblock caller for early/partial master even if a stream hangs forever.
-    let raceTimer = null;
-    const timeoutP = timeoutMs > 0 ? new Promise((r) => { raceTimer = setTimeout(r, timeoutMs); }) : Promise.resolve();
-    await Promise.race([wrapped, timeoutP]);
-    if (raceTimer) { clearTimeout(raceTimer); raceTimer = null; }
+    // Unblock the caller (for early/partial master) only if this model goes SILENT for timeoutMs;
+    // armUnblock() is re-armed on every activity/chunk above, so an actively streaming model waits
+    // for real completion (`wrapped`) rather than being cut off mid-answer. Disabled (0) → wait fully.
+    await (unblockP ? Promise.race([wrapped, unblockP]) : wrapped);
+    if (unblockTimer) { clearTimeout(unblockTimer); unblockTimer = null; }
 
     if (responseTimeout) {
       clearTimeout(responseTimeout);
@@ -3283,6 +3312,10 @@ async function runModel(turn, model, signal) {
     if (responseTimeout) {
       clearTimeout(responseTimeout);
       responseTimeout = null;
+    }
+    if (unblockTimer) {
+      clearTimeout(unblockTimer);
+      unblockTimer = null;
     }
   }
   resp.elapsedMs = performance.now() - startedAt;
@@ -3378,7 +3411,19 @@ async function runMaster(turn, master, modelsForBlock, signal) {
       }
     }, timeoutMs);
   };
+  // Idle "unblock" gate for the aggregator, mirroring armMasterTimeout — re-armed on activity/chunk
+  // (below) so a slow but actively streaming aggregator waits for real completion instead of
+  // unblocking send() early.
+  let masterUnblockTimer = null;
+  let resolveMasterUnblock = null;
+  const masterUnblockP = timeoutMs > 0 ? new Promise((r) => { resolveMasterUnblock = r; }) : null;
+  const armMasterUnblock = () => {
+    if (timeoutMs <= 0) return;
+    if (masterUnblockTimer) clearTimeout(masterUnblockTimer);
+    masterUnblockTimer = setTimeout(() => { resolveMasterUnblock?.(); }, timeoutMs);
+  };
   armMasterTimeout();
+  armMasterUnblock();
 
   // Aggregation input: optional previous official synthesis + this question + this-turn answers.
   const prevMaster = latestSuccessfulMasterBefore(turn);
@@ -3403,7 +3448,7 @@ async function runMaster(turn, master, modelsForBlock, signal) {
 
   try {
     // Wrap to ensure promise settles promptly even if stream hangs.
-    // Race with timeoutP so runMaster await unblocks on hang (important when called with await from send's full path).
+    // Race with the idle unblock gate so runMaster await unblocks on a real hang (important when called with await from send's full path).
     const wrapped = new Promise((resolve) => {
       const streamP = streamChat(master, messages, {
         signal,
@@ -3414,7 +3459,9 @@ async function runMaster(turn, master, modelsForBlock, signal) {
           if (b) { b.classList.remove('streaming'); b.innerHTML = `<span class="card-status status-wait">${escapeText(t('status.retry_busy', { delay: Math.round(delay / 1000), attempt }))}</span>`; }
         },
         onActivity: () => {
-          if (turn._masterGen === masterGen && turn.master.status === 'streaming' && !turn.master.text) armMasterTimeout();
+          if (turn._masterGen !== masterGen || turn.master.status !== 'streaming') return;
+          if (!turn.master.text) armMasterTimeout();
+          armMasterUnblock();
         },
         onChunk: (_c, fullText) => {
           if (turn._masterGen !== masterGen || turn.master.status !== 'streaming') return;
@@ -3422,6 +3469,7 @@ async function runMaster(turn, master, modelsForBlock, signal) {
             clearTimeout(masterTimeout);
             masterTimeout = null;
           }
+          armMasterUnblock();
           turn.master.text = fullText;
           const b = document.getElementById(`body-${turn.id}-master`);
           if (b) { b.classList.add('streaming'); renderResponseHtml(b, fullText); }
@@ -3450,10 +3498,8 @@ async function runMaster(turn, master, modelsForBlock, signal) {
       });
     });
 
-    let raceTimer = null;
-    const timeoutP = timeoutMs > 0 ? new Promise((r) => { raceTimer = setTimeout(r, timeoutMs); }) : Promise.resolve();
-    await Promise.race([wrapped, timeoutP]);
-    if (raceTimer) { clearTimeout(raceTimer); raceTimer = null; }
+    await (masterUnblockP ? Promise.race([wrapped, masterUnblockP]) : wrapped);
+    if (masterUnblockTimer) { clearTimeout(masterUnblockTimer); masterUnblockTimer = null; }
   } catch (err) {
     if (masterTimeout) {
       clearTimeout(masterTimeout);
@@ -3465,6 +3511,10 @@ async function runMaster(turn, master, modelsForBlock, signal) {
     if (masterTimeout) {
       clearTimeout(masterTimeout);
       masterTimeout = null;
+    }
+    if (masterUnblockTimer) {
+      clearTimeout(masterUnblockTimer);
+      masterUnblockTimer = null;
     }
   }
   turn.master.elapsedMs = performance.now() - startedAt;

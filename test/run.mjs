@@ -81,6 +81,14 @@ ok(!renderMarkdown('```\n<script>alert(1)</script>\n```').includes('<script>'), 
 ok(renderMarkdown('visit https://example.com now').includes('<a href="https://example.com"'), 'bare https URL is autolinked');
 ok(!renderMarkdown('[x](https://e.com" onmouseover="alert(1))').includes('onmouseover="'), 'a quote inside the URL cannot break out of the href attribute');
 
+// ---- markdown.js: <br> line break + h4–h6 headings ----
+ok(renderMarkdown('a<br>b').includes('<br/>'), '<br> becomes a real line break');
+ok(!renderMarkdown('a<br>b').includes('&lt;br&gt;'), '<br> is not shown as escaped text');
+ok(renderMarkdown('a<br />b').includes('<br/>'), '<br /> (slash/space) also becomes a line break');
+ok(renderMarkdown('#### Sub').includes('<h4>'), '#### renders as <h4>');
+ok(renderMarkdown('###### Deep').includes('<h6>'), '###### renders as <h6>');
+ok(!renderMarkdown('x<br onload=alert(1)>y').includes('<br onload'), '<br> with attributes stays escaped (no attribute injection)');
+
 // ---- analysis.js: buildShareSnapshot (share-link projection; must never leak secrets) ----
 {
   const chat = { title: 'My chat', createdAt: 111 };

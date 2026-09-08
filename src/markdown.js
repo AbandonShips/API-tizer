@@ -55,6 +55,10 @@ function inline(text) {
   const links = [];
   // inline code
   t = t.replace(/`([^`]+)`/g, (_, c) => `<code>${c}</code>`);
+  // Honor a literal <br> (the only raw HTML tag we allow) — models emit it for line breaks.
+  // Source is HTML-escaped up front, so match the escaped form; the pattern requires the tag to
+  // close immediately, so no attributes can ride along — stays XSS-safe.
+  t = t.replace(/&lt;br\s*\/?&gt;/gi, '<br/>');
   // bold
   t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   t = t.replace(/__([^_]+)__/g, '<strong>$1</strong>');
@@ -164,7 +168,7 @@ export function renderMarkdown(src) {
     }
 
     // headings
-    const h = line.match(/^(#{1,3})\s+(.*)$/);
+    const h = line.match(/^(#{1,6})\s+(.*)$/);
     if (h) {
       closeList();
       const level = h[1].length;
@@ -205,7 +209,7 @@ export function renderMarkdown(src) {
     let para = line;
     i++;
     while (i < lines.length && !/^\s*$/.test(lines[i]) &&
-           !/^```/.test(lines[i]) && !/^#{1,3}\s/.test(lines[i]) &&
+           !/^```/.test(lines[i]) && !/^#{1,6}\s/.test(lines[i]) &&
            !/^\s*[-*+]\s+/.test(lines[i]) && !/^\s*\d+\.\s+/.test(lines[i]) &&
            !/^&gt;\s?/.test(lines[i]) &&
            // stop before table start too
